@@ -1,299 +1,266 @@
-// © WaveBot - 8-Pair Forex Multi-Symbol Scanner
-// Single chart scans 8 Forex pairs with MTF Confluence
-// Tracks max 2 simulated open positions - alerts suppressed when capacity full
-// TP: 3% | SL: 1.5% | Position: 30% | Max open: 2
 //@version=5
-indicator("WaveBot Scanner | 8-Pair Forex Confluence",
-     shorttitle   = "WaveBot Scanner",
-     overlay      = true,
-     max_labels_count = 500,
-     max_lines_count  = 500)
+// WaveBot Scanner - 8 Forex Pairs, MTF Confluence, Max 2 Positions
+// Single chart monitors all 8 pairs. Alerts suppressed when 2 virtual
+// positions are already open. Apply this indicator to one chart tab.
 
-// ═══════════════════════════════════════════════════════════════════
-//                          USER INPUTS
-// ═══════════════════════════════════════════════════════════════════
-grpPairs    = "🌐 Symbols (8 pairs)"
-grpTF       = "⏱️ Timeframes"
-grpLogic    = "🧠 Confluence Logic"
-grpRisk     = "💰 Risk"
-grpSession  = "🕐 Session"
-grpDash     = "📊 Dashboard"
+indicator("WaveBot Scanner",
+     shorttitle = "WaveBot Scanner",
+     overlay    = true,
+     max_labels_count = 500)
 
-// --- 8 Forex symbols (change if your broker uses different tickers)
-sym1 = input.symbol("OANDA:EURUSD", "Pair 1", group=grpPairs)
-sym2 = input.symbol("OANDA:GBPUSD", "Pair 2", group=grpPairs)
-sym3 = input.symbol("OANDA:USDJPY", "Pair 3", group=grpPairs)
-sym4 = input.symbol("OANDA:AUDUSD", "Pair 4", group=grpPairs)
-sym5 = input.symbol("OANDA:USDCAD", "Pair 5", group=grpPairs)
-sym6 = input.symbol("OANDA:NZDUSD", "Pair 6", group=grpPairs)
-sym7 = input.symbol("OANDA:EURJPY", "Pair 7", group=grpPairs)
-sym8 = input.symbol("OANDA:GBPJPY", "Pair 8", group=grpPairs)
+// ---------- INPUTS ----------
+gSym  = "Symbols"
+gTF   = "Timeframes"
+gLog  = "Logic"
+gRisk = "Risk"
+gSess = "Session"
 
-// --- Timeframes
-scanTF = input.timeframe("60",  "Scan TF (primary signal)", options=["15","30","60","120","240"], group=grpTF)
-htfTF  = input.timeframe("240", "HTF (trend filter)",       options=["60","120","240","360","D"], group=grpTF)
+sym1 = input.symbol("OANDA:EURUSD", "Pair 1", group=gSym)
+sym2 = input.symbol("OANDA:GBPUSD", "Pair 2", group=gSym)
+sym3 = input.symbol("OANDA:USDJPY", "Pair 3", group=gSym)
+sym4 = input.symbol("OANDA:AUDUSD", "Pair 4", group=gSym)
+sym5 = input.symbol("OANDA:USDCAD", "Pair 5", group=gSym)
+sym6 = input.symbol("OANDA:NZDUSD", "Pair 6", group=gSym)
+sym7 = input.symbol("OANDA:EURJPY", "Pair 7", group=gSym)
+sym8 = input.symbol("OANDA:GBPJPY", "Pair 8", group=gSym)
 
-// --- Logic
-minScore  = input.int(5, "Minimum Confluence Score (/6)", minval=3, maxval=6, group=grpLogic)
-adxThresh = input.float(22, "ADX Minimum",          minval=10, group=grpLogic)
+scanTF = input.timeframe("60",  "Scan TF",  options=["15","30","60","120","240"], group=gTF)
+htfTF  = input.timeframe("240", "HTF Trend",options=["60","120","240","360","D"], group=gTF)
 
-// --- Risk
-tpPct   = input.float(3.0, "TP %", minval=0.5, step=0.1, group=grpRisk)
-slPct   = input.float(1.5, "SL %", minval=0.3, step=0.1, group=grpRisk)
-sizePct = input.float(30, "Position size (%)", minval=1, maxval=100, group=grpRisk)
-maxOpen = input.int(2, "Max simultaneous open positions", minval=1, maxval=8, group=grpRisk)
+minScore  = input.int(5, "Min Score (of 6)", minval=3, maxval=6, group=gLog)
+adxThresh = input.float(22, "ADX Minimum",   minval=10, group=gLog)
 
-// --- Session
-useSession = input.bool(true, "Session filter (London+NY Overlap)", group=grpSession)
-sessionStr = input.session("1200-1700", "Session", group=grpSession)
-noFriPM    = input.bool(true, "Block Friday after 15:00", group=grpSession)
+tpPct   = input.float(3.0, "TP %", minval=0.5, step=0.1, group=gRisk)
+slPct   = input.float(1.5, "SL %", minval=0.3, step=0.1, group=gRisk)
+sizePct = input.float(30,  "Size %", minval=1, maxval=100, group=gRisk)
+maxOpen = input.int(2, "Max Open Positions", minval=1, maxval=8, group=gRisk)
 
-// --- Dashboard
-showDash   = input.bool(true, "Show dashboard", group=grpDash)
-dashPos    = input.string("top_right", "Dashboard position",
-     options=["top_right","top_left","middle_right","bottom_right","bottom_left"], group=grpDash)
+useSession = input.bool(true, "Session filter", group=gSess)
+sessionStr = input.session("1200-1700", "Session", group=gSess)
+noFriPM    = input.bool(true, "Block Friday after 15:00", group=gSess)
 
-// ═══════════════════════════════════════════════════════════════════
-//                          CORE COMPUTE FUNCTION
-// ═══════════════════════════════════════════════════════════════════
-// Wrapper that computes every indicator in ONE pass in the target symbol/TF.
-// Used as the expression for request.security so all values come from the same
-// symbol+timeframe context. Tuple returns from ta.macd / ta.dmi are destructured
-// before being packed into the final return tuple (Pine v5 doesn't allow tuple
-// indexing inline).
-f_pack() =>
-    c        = close
-    emaF     = ta.ema(close, 50)
-    emaS     = ta.ema(close, 200)
-    rsi      = ta.rsi(close, 14)
-    [macdL, sigL, macdH] = ta.macd(close, 12, 26, 9)
-    [diP, diM, adxV]      = ta.dmi(14, 14)
-    stKRaw   = ta.stoch(close, high, low, 14)
-    stK      = ta.sma(stKRaw, 3)
-    stD      = ta.sma(stK, 3)
-    atrV     = ta.atr(14)
-    atrAvgV  = ta.sma(atrV, 50)
-    [c, emaF, emaS, rsi, macdH, macdL, sigL, adxV, diP, diM, stK, stD, atrV, atrAvgV]
+// ---------- POSITION ARRAYS (parallel, fixed size 8) ----------
+var array<string> pSide  = array.new<string>(8, "")
+var array<string> pSym   = array.new<string>(8, "")
+var array<float>  pEntry = array.new<float>(8, na)
+var array<float>  pSL    = array.new<float>(8, na)
+var array<float>  pTP    = array.new<float>(8, na)
 
-f_scan(sym) =>
-    [c, emaF, emaS, rsi, macdHist, macdLine, sigLine, adx, diP, diM,
-     stK, stD, atr, atrAvg] = request.security(sym, scanTF, f_pack(),
-         lookahead=barmerge.lookahead_off)
-    [c, emaF, emaS, rsi, macdHist, macdLine, sigLine, adx, diP, diM, stK, stD, atr, atrAvg]
+// ---------- HELPER FUNCTIONS (all at top level) ----------
+pack() =>
+    c  = close
+    ef = ta.ema(close, 50)
+    es = ta.ema(close, 200)
+    r  = ta.rsi(close, 14)
+    [ml, sl, mh] = ta.macd(close, 12, 26, 9)
+    [dp, dm, ax] = ta.dmi(14, 14)
+    skR = ta.stoch(close, high, low, 14)
+    sk  = ta.sma(skR, 3)
+    sd  = ta.sma(sk, 3)
+    at  = ta.atr(14)
+    aa  = ta.sma(at, 50)
+    [c, ef, es, r, mh, ml, sl, ax, dp, dm, sk, sd, at, aa]
 
-f_htfPack() =>
+htfPack() =>
     [ta.ema(close, 50), ta.ema(close, 200)]
 
-f_htf(sym) =>
-    [h_emaF, h_emaS] = request.security(sym, htfTF, f_htfPack(),
-         lookahead=barmerge.lookahead_off)
-    [h_emaF, h_emaS]
+scoreSym(sym) =>
+    [c, ef, es, r, mh, ml, sl, ax, dp, dm, sk, sd, at, aa] = request.security(sym, scanTF, pack(), lookahead=barmerge.lookahead_off)
+    [hef, hes] = request.security(sym, htfTF, htfPack(), lookahead=barmerge.lookahead_off)
 
-// ═══════════════════════════════════════════════════════════════════
-//                          SCORING FUNCTION
-// ═══════════════════════════════════════════════════════════════════
-// Returns: [longScore, shortScore, longFire, shortFire, price]
-f_score(sym) =>
-    [c, emaF, emaS, rsi, macdHist, macdLine, sigLine, adx, diP, diM, stK, stD, atr, atrAvg] = f_scan(sym)
-    [h_emaF, h_emaS] = f_htf(sym)
+    htfBull = hef > hes and c > hes
+    htfBear = hef < hes and c < hes
+    volOk   = at < aa * 1.5
 
-    htfBull = h_emaF > h_emaS and c > h_emaS
-    htfBear = h_emaF < h_emaS and c < h_emaS
+    lT = (ef > es and c > ef) ? 1 : 0
+    lH = htfBull ? 1 : 0
+    lR = (r >= 40 and r <= 65) ? 1 : 0
+    lM = (ml > sl and mh > nz(mh[1], 0)) ? 1 : 0
+    lA = (ax > adxThresh and dp > dm) ? 1 : 0
+    lS = (sk > sd and sk < 80) ? 1 : 0
+    lsc = lT + lH + lR + lM + lA + lS
 
-    volOk = atr < atrAvg * 1.5
+    sT = (ef < es and c < ef) ? 1 : 0
+    sH = htfBear ? 1 : 0
+    sR = (r >= 35 and r <= 60) ? 1 : 0
+    sM = (ml < sl and mh < nz(mh[1], 0)) ? 1 : 0
+    sA = (ax > adxThresh and dm > dp) ? 1 : 0
+    sS = (sk < sd and sk > 20) ? 1 : 0
+    ssc = sT + sH + sR + sM + sA + sS
 
-    // Long score
-    lTrend = emaF > emaS and c > emaF               ? 1 : 0
-    lHtf   = htfBull                                 ? 1 : 0
-    lRsi   = rsi >= 40 and rsi <= 65                 ? 1 : 0
-    lMacd  = macdLine > sigLine and macdHist > nz(macdHist[1], 0) ? 1 : 0
-    lAdx   = adx > adxThresh and diP > diM           ? 1 : 0
-    lStoch = stK > stD and stK < 80                  ? 1 : 0
-    longSc  = lTrend + lHtf + lRsi + lMacd + lAdx + lStoch
+    lFire = lsc >= minScore and volOk
+    sFire = ssc >= minScore and volOk
+    [lFire, sFire, c, lsc, ssc, ax, r, volOk]
 
-    // Short score
-    sTrend = emaF < emaS and c < emaF                ? 1 : 0
-    sHtf   = htfBear                                 ? 1 : 0
-    sRsi   = rsi >= 35 and rsi <= 60                 ? 1 : 0
-    sMacd  = macdLine < sigLine and macdHist < nz(macdHist[1], 0) ? 1 : 0
-    sAdx   = adx > adxThresh and diM > diP           ? 1 : 0
-    sStoch = stK < stD and stK > 20                  ? 1 : 0
-    shortSc = sTrend + sHtf + sRsi + sMacd + sAdx + sStoch
+countOpen() =>
+    n = 0
+    for i = 0 to 7
+        if array.get(pSide, i) != ""
+            n += 1
+    n
 
-    longFire  = longSc  >= minScore and volOk
-    shortFire = shortSc >= minScore and volOk
-    [longSc, shortSc, longFire, shortFire, c, adx, rsi, volOk]
+hasSym(s) =>
+    found = false
+    for i = 0 to 7
+        if array.get(pSym, i) == s
+            found := true
+    found
 
-// ═══════════════════════════════════════════════════════════════════
-//                          SESSION / TIME
-// ═══════════════════════════════════════════════════════════════════
+emptySlot() =>
+    idx = -1
+    for i = 0 to 7
+        if idx == -1 and array.get(pSide, i) == ""
+            idx := i
+    idx
+
+// ---------- SCAN ALL 8 PAIRS ----------
+[lf1, sf1, p1, l1, s1, a1, r1, v1] = scoreSym(sym1)
+[lf2, sf2, p2, l2, s2, a2, r2, v2] = scoreSym(sym2)
+[lf3, sf3, p3, l3, s3, a3, r3, v3] = scoreSym(sym3)
+[lf4, sf4, p4, l4, s4, a4, r4, v4] = scoreSym(sym4)
+[lf5, sf5, p5, l5, s5, a5, r5, v5] = scoreSym(sym5)
+[lf6, sf6, p6, l6, s6, a6, r6, v6] = scoreSym(sym6)
+[lf7, sf7, p7, l7, s7, a7, r7, v7] = scoreSym(sym7)
+[lf8, sf8, p8, l8, s8, a8, r8, v8] = scoreSym(sym8)
+
+// Build price lookup via explicit comparisons (no loops needed)
+priceFor(s) =>
+    float out = na
+    if s == sym1
+        out := p1
+    if s == sym2
+        out := p2
+    if s == sym3
+        out := p3
+    if s == sym4
+        out := p4
+    if s == sym5
+        out := p5
+    if s == sym6
+        out := p6
+    if s == sym7
+        out := p7
+    if s == sym8
+        out := p8
+    out
+
+// ---------- SESSION ----------
 inSession = not useSession or not na(time(timeframe.period, sessionStr))
 okFriday  = not (noFriPM and dayofweek == dayofweek.friday and hour >= 15)
 timeOk    = inSession and okFriday
 
-// ═══════════════════════════════════════════════════════════════════
-//                          SCAN ALL 8 PAIRS (up-front, no calls in loops)
-// ═══════════════════════════════════════════════════════════════════
-[l1, s1, lf1, sf1, p1, adx1, rsi1, v1] = f_score(sym1)
-[l2, s2, lf2, sf2, p2, adx2, rsi2, v2] = f_score(sym2)
-[l3, s3, lf3, sf3, p3, adx3, rsi3, v3] = f_score(sym3)
-[l4, s4, lf4, sf4, p4, adx4, rsi4, v4] = f_score(sym4)
-[l5, s5, lf5, sf5, p5, adx5, rsi5, v5] = f_score(sym5)
-[l6, s6, lf6, sf6, p6, adx6, rsi6, v6] = f_score(sym6)
-[l7, s7, lf7, sf7, p7, adx7, rsi7, v7] = f_score(sym7)
-[l8, s8, lf8, sf8, p8, adx8, rsi8, v8] = f_score(sym8)
-
-symbols    = array.from(sym1, sym2, sym3, sym4, sym5, sym6, sym7, sym8)
-longFires  = array.from(lf1, lf2, lf3, lf4, lf5, lf6, lf7, lf8)
-shortFires = array.from(sf1, sf2, sf3, sf4, sf5, sf6, sf7, sf8)
-prices     = array.from(p1, p2, p3, p4, p5, p6, p7, p8)
-longScores = array.from(l1, l2, l3, l4, l5, l6, l7, l8)
-shortScores= array.from(s1, s2, s3, s4, s5, s6, s7, s8)
-adxs       = array.from(adx1, adx2, adx3, adx4, adx5, adx6, adx7, adx8)
-rsis       = array.from(rsi1, rsi2, rsi3, rsi4, rsi5, rsi6, rsi7, rsi8)
-volOks     = array.from(v1, v2, v3, v4, v5, v6, v7, v8)
-
-// Symbol → current price lookup (avoids request.security inside loops)
-f_priceFor(sym) =>
-    float px = na
-    for i = 0 to array.size(symbols) - 1
-        if array.get(symbols, i) == sym
-            px := array.get(prices, i)
-            break
-    px
-
-// ═══════════════════════════════════════════════════════════════════
-//                          VIRTUAL POSITION TRACKER
-// ═══════════════════════════════════════════════════════════════════
-// Up to `maxOpen` concurrent positions across the 8 pairs.
-type Pos
-    string  sym
-    string  side
-    float   entry
-    float   sl
-    float   tp
-    int     openBar
-
-var array<Pos> openPos = array.new<Pos>()
-
-// Evaluate exits using pre-fetched prices (no request.security inside loop)
-if array.size(openPos) > 0
-    for i = array.size(openPos) - 1 to 0 by -1
-        p = array.get(openPos, i)
-        px = f_priceFor(p.sym)
+// ---------- EVALUATE EXITS ----------
+for i = 0 to 7
+    side = array.get(pSide, i)
+    if side != ""
+        sYm = array.get(pSym, i)
+        px  = priceFor(sYm)
+        sl  = array.get(pSL, i)
+        tp  = array.get(pTP, i)
         hit = false
         reason = ""
         if not na(px)
-            if p.side == "LONG"
-                if px <= p.sl
+            if side == "LONG"
+                if px <= sl
                     hit := true
                     reason := "SL"
-                else if px >= p.tp
+                if px >= tp
                     hit := true
                     reason := "TP"
-            else
-                if px >= p.sl
+            if side == "SHORT"
+                if px >= sl
                     hit := true
                     reason := "SL"
-                else if px <= p.tp
+                if px <= tp
                     hit := true
                     reason := "TP"
         if hit
-            alert('{"action":"CLOSE","pair":"' + p.sym + '","side":"' + p.side + '","reason":"' + reason + '","exit":' + str.tostring(px, "#.#####") + '}', alert.freq_once_per_bar_close)
-            array.remove(openPos, i)
+            alert('{"action":"CLOSE","pair":"' + sYm + '","side":"' + side + '","reason":"' + reason + '","exit":' + str.tostring(px) + '}', alert.freq_once_per_bar_close)
+            array.set(pSide,  i, "")
+            array.set(pSym,   i, "")
+            array.set(pEntry, i, na)
+            array.set(pSL,    i, na)
+            array.set(pTP,    i, na)
 
-// ═══════════════════════════════════════════════════════════════════
-//                          OPEN NEW POSITIONS (if capacity)
-// ═══════════════════════════════════════════════════════════════════
-f_hasOpen(sym) =>
-    found = false
-    if array.size(openPos) > 0
-        for i = 0 to array.size(openPos) - 1
-            if array.get(openPos, i).sym == sym
-                found := true
-                break
-    found
+// ---------- OPEN NEW POSITIONS ----------
+tryOpen(s, lFire, sFire, px) =>
+    if timeOk and barstate.isconfirmed and countOpen() < maxOpen and not hasSym(s)
+        slot = emptySlot()
+        if slot >= 0
+            if lFire
+                sl = px * (1 - slPct / 100)
+                tp = px * (1 + tpPct / 100)
+                array.set(pSide,  slot, "LONG")
+                array.set(pSym,   slot, s)
+                array.set(pEntry, slot, px)
+                array.set(pSL,    slot, sl)
+                array.set(pTP,    slot, tp)
+                alert('{"action":"BUY","pair":"' + s + '","entry":' + str.tostring(px) + ',"sl":' + str.tostring(sl) + ',"tp":' + str.tostring(tp) + ',"size_pct":' + str.tostring(sizePct) + '}', alert.freq_once_per_bar_close)
+            if sFire and not lFire
+                sl = px * (1 + slPct / 100)
+                tp = px * (1 - tpPct / 100)
+                array.set(pSide,  slot, "SHORT")
+                array.set(pSym,   slot, s)
+                array.set(pEntry, slot, px)
+                array.set(pSL,    slot, sl)
+                array.set(pTP,    slot, tp)
+                alert('{"action":"SELL","pair":"' + s + '","entry":' + str.tostring(px) + ',"sl":' + str.tostring(sl) + ',"tp":' + str.tostring(tp) + ',"size_pct":' + str.tostring(sizePct) + '}', alert.freq_once_per_bar_close)
+    0
 
-if timeOk and barstate.isconfirmed
-    for i = 0 to 7
-        sym = array.get(symbols, i)
-        if array.size(openPos) >= maxOpen
-            break
-        if f_hasOpen(sym)
-            continue
-        px  = array.get(prices, i)
-        if array.get(longFires, i)
-            sl = px * (1 - slPct / 100)
-            tp = px * (1 + tpPct / 100)
-            array.push(openPos, Pos.new(sym, "LONG", px, sl, tp, bar_index))
-            alert('{"action":"BUY","pair":"' + sym + '","entry":' + str.tostring(px, "#.#####") + ',"sl":' + str.tostring(sl, "#.#####") + ',"tp":' + str.tostring(tp, "#.#####") + ',"size_pct":' + str.tostring(sizePct) + ',"score":' + str.tostring(array.get(longScores, i)) + '}', alert.freq_once_per_bar_close)
-        else if array.get(shortFires, i)
-            sl = px * (1 + slPct / 100)
-            tp = px * (1 - tpPct / 100)
-            array.push(openPos, Pos.new(sym, "SHORT", px, sl, tp, bar_index))
-            alert('{"action":"SELL","pair":"' + sym + '","entry":' + str.tostring(px, "#.#####") + ',"sl":' + str.tostring(sl, "#.#####") + ',"tp":' + str.tostring(tp, "#.#####") + ',"size_pct":' + str.tostring(sizePct) + ',"score":' + str.tostring(array.get(shortScores, i)) + '}', alert.freq_once_per_bar_close)
+dummy1 = tryOpen(sym1, lf1, sf1, p1)
+dummy2 = tryOpen(sym2, lf2, sf2, p2)
+dummy3 = tryOpen(sym3, lf3, sf3, p3)
+dummy4 = tryOpen(sym4, lf4, sf4, p4)
+dummy5 = tryOpen(sym5, lf5, sf5, p5)
+dummy6 = tryOpen(sym6, lf6, sf6, p6)
+dummy7 = tryOpen(sym7, lf7, sf7, p7)
+dummy8 = tryOpen(sym8, lf8, sf8, p8)
 
-// ═══════════════════════════════════════════════════════════════════
-//                          DASHBOARD
-// ═══════════════════════════════════════════════════════════════════
-f_pos(s) =>
-    switch s
-        "top_right"    => position.top_right
-        "top_left"     => position.top_left
-        "middle_right" => position.middle_right
-        "bottom_right" => position.bottom_right
-        "bottom_left"  => position.bottom_left
-        =>                position.top_right
+// ---------- DASHBOARD HELPER (top-level function) ----------
+drawRow(tbl, r, s, lf, sf, px, lsc, ssc, ax, rs, vo) =>
+    sdTxt = lf ? "LONG" : sf ? "SHORT" : "-"
+    sc = color.gray
+    if lf
+        sc := color.lime
+    if sf
+        sc := color.red
+    scTxt = lf ? str.tostring(lsc) + "/6" : sf ? str.tostring(ssc) + "/6" : str.tostring(math.max(lsc, ssc)) + "/6"
+    bg = hasSym(s) ? color.new(color.yellow, 70) : color.new(color.black, 100)
+    table.cell(tbl, 0, r, s,                          bgcolor=bg, text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 1, r, sdTxt,                      bgcolor=bg, text_color=sc,          text_size=size.tiny)
+    table.cell(tbl, 2, r, scTxt,                      bgcolor=bg, text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 3, r, str.tostring(px, "#.#####"),bgcolor=bg, text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 4, r, str.tostring(ax, "#.#"),    bgcolor=bg, text_color=ax > adxThresh ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(tbl, 5, r, str.tostring(rs, "#.#"),    bgcolor=bg, text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 6, r, vo ? "OK" : "HI",           bgcolor=bg, text_color=vo ? color.lime : color.red, text_size=size.tiny)
 
-if showDash and barstate.islast
-    var table d = table.new(f_pos(dashPos), 7, 11, border_width=1, border_color=color.gray)
-    // Header
-    table.cell(d, 0, 0, "WaveBot Scanner", bgcolor=color.new(color.blue, 40), text_color=color.white, text_size=size.small)
-    table.cell(d, 1, 0, "Side",  bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.tiny)
-    table.cell(d, 2, 0, "Score", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.tiny)
-    table.cell(d, 3, 0, "Price", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.tiny)
-    table.cell(d, 4, 0, "ADX",   bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.tiny)
-    table.cell(d, 5, 0, "RSI",   bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.tiny)
-    table.cell(d, 6, 0, "Vol",   bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.tiny)
+// ---------- DASHBOARD ----------
+var table dash = table.new(position.top_right, 7, 11, border_width=1, border_color=color.gray)
 
-    for i = 0 to 7
-        sym   = array.get(symbols, i)
-        lf    = array.get(longFires, i)
-        sf    = array.get(shortFires, i)
-        lSc   = array.get(longScores, i)
-        sSc   = array.get(shortScores, i)
-        px    = array.get(prices, i)
-        adxV  = array.get(adxs, i)
-        rsiV  = array.get(rsis, i)
-        vOk   = array.get(volOks, i)
+if barstate.islast
+    table.cell(dash, 0, 0, "Pair",  bgcolor=color.new(color.blue, 40), text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 0, "Side",  bgcolor=color.new(color.blue, 40), text_color=color.white, text_size=size.small)
+    table.cell(dash, 2, 0, "Score", bgcolor=color.new(color.blue, 40), text_color=color.white, text_size=size.small)
+    table.cell(dash, 3, 0, "Price", bgcolor=color.new(color.blue, 40), text_color=color.white, text_size=size.small)
+    table.cell(dash, 4, 0, "ADX",   bgcolor=color.new(color.blue, 40), text_color=color.white, text_size=size.small)
+    table.cell(dash, 5, 0, "RSI",   bgcolor=color.new(color.blue, 40), text_color=color.white, text_size=size.small)
+    table.cell(dash, 6, 0, "Vol",   bgcolor=color.new(color.blue, 40), text_color=color.white, text_size=size.small)
 
-        side   = lf ? "🟢 LONG" : sf ? "🔴 SHORT" : "—"
-        sideC  = lf ? color.lime : sf ? color.red : color.gray
-        scStr  = lf ? str.tostring(lSc) + "/6" : sf ? str.tostring(sSc) + "/6" : str.tostring(math.max(lSc, sSc)) + "/6"
-        rowC   = f_hasOpen(sym) ? color.new(color.yellow, 70) : na
+    drawRow(dash, 1, sym1, lf1, sf1, p1, l1, s1, a1, r1, v1)
+    drawRow(dash, 2, sym2, lf2, sf2, p2, l2, s2, a2, r2, v2)
+    drawRow(dash, 3, sym3, lf3, sf3, p3, l3, s3, a3, r3, v3)
+    drawRow(dash, 4, sym4, lf4, sf4, p4, l4, s4, a4, r4, v4)
+    drawRow(dash, 5, sym5, lf5, sf5, p5, l5, s5, a5, r5, v5)
+    drawRow(dash, 6, sym6, lf6, sf6, p6, l6, s6, a6, r6, v6)
+    drawRow(dash, 7, sym7, lf7, sf7, p7, l7, s7, a7, r7, v7)
+    drawRow(dash, 8, sym8, lf8, sf8, p8, l8, s8, a8, r8, v8)
 
-        // Strip prefix like "OANDA:" → "EURUSD"
-        symParts   = str.split(sym, ":")
-        displaySym = array.size(symParts) > 1 ? array.get(symParts, 1) : sym
+    openN = countOpen()
+    table.cell(dash, 0, 9,  "Open/Max", bgcolor=color.new(color.gray, 50), text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 9,  str.tostring(openN) + "/" + str.tostring(maxOpen), bgcolor=color.new(color.gray, 50), text_color=openN >= maxOpen ? color.red : color.lime, text_size=size.tiny)
+    table.cell(dash, 0, 10, "Session",  bgcolor=color.new(color.gray, 50), text_color=color.white, text_size=size.tiny)
+    table.cell(dash, 1, 10, timeOk ? "OPEN" : "CLOSED", bgcolor=color.new(color.gray, 50), text_color=timeOk ? color.lime : color.red, text_size=size.tiny)
 
-        table.cell(d, 0, i + 1, displaySym, bgcolor=rowC, text_color=color.white, text_size=size.tiny)
-        table.cell(d, 1, i + 1, side,       bgcolor=rowC, text_color=sideC,       text_size=size.tiny)
-        table.cell(d, 2, i + 1, scStr,      bgcolor=rowC, text_color=color.white, text_size=size.tiny)
-        table.cell(d, 3, i + 1, str.tostring(px, "#.#####"), bgcolor=rowC, text_color=color.white, text_size=size.tiny)
-        table.cell(d, 4, i + 1, str.tostring(adxV, "#.#"),   bgcolor=rowC, text_color=adxV > adxThresh ? color.lime : color.gray, text_size=size.tiny)
-        table.cell(d, 5, i + 1, str.tostring(rsiV, "#.#"),   bgcolor=rowC, text_color=color.white, text_size=size.tiny)
-        table.cell(d, 6, i + 1, vOk ? "OK" : "HI",           bgcolor=rowC, text_color=vOk ? color.lime : color.red, text_size=size.tiny)
-
-    // Footer: capacity
-    table.cell(d, 0, 9, "Open / Max", bgcolor=color.new(color.gray, 50), text_color=color.white, text_size=size.tiny)
-    table.cell(d, 1, 9, str.tostring(array.size(openPos)) + " / " + str.tostring(maxOpen), bgcolor=color.new(color.gray, 50), text_color=array.size(openPos) >= maxOpen ? color.red : color.lime, text_size=size.tiny)
-    table.cell(d, 0, 10, "Session", bgcolor=color.new(color.gray, 50), text_color=color.white, text_size=size.tiny)
-    table.cell(d, 1, 10, timeOk ? "OPEN" : "CLOSED", bgcolor=color.new(color.gray, 50), text_color=timeOk ? color.lime : color.red, text_size=size.tiny)
-
-// ═══════════════════════════════════════════════════════════════════
-//                          MASTER ALERT (any fire, capacity-aware)
-// ═══════════════════════════════════════════════════════════════════
-anyFire = (lf1 or sf1 or lf2 or sf2 or lf3 or sf3 or lf4 or sf4 or
-           lf5 or sf5 or lf6 or sf6 or lf7 or sf7 or lf8 or sf8) and timeOk and array.size(openPos) < maxOpen
-
-alertcondition(anyFire, "WaveBot: ANY signal (capacity available)", "WaveBot scanner fired a signal with capacity available")
+// ---------- MASTER ALERT ----------
+anyFire = (lf1 or sf1 or lf2 or sf2 or lf3 or sf3 or lf4 or sf4 or lf5 or sf5 or lf6 or sf6 or lf7 or sf7 or lf8 or sf8) and timeOk and countOpen() < maxOpen
+alertcondition(anyFire, "WaveBot ANY signal", "WaveBot scanner fired a signal with capacity available")
