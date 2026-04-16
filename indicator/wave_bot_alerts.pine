@@ -1,0 +1,238 @@
+// © WaveBot - Per-Chart Alert Indicator with ATR Trailing Stop
+// Apply on each of your 8 chart tabs (one per pair) for granular alerts
+// Designed for 3commas / webhook / Telegram integration
+// TP: 3% | SL: 1.5% | Position: 30% | MTF Confluence
+//@version=5
+indicator("WaveBot Alerts | Single-Pair MTF",
+     shorttitle  = "WaveBot Alerts",
+     overlay     = true,
+     max_labels_count = 500,
+     max_lines_count  = 500)
+
+// ═══════════════════════════════════════════════════════════════════
+//                          USER INPUTS
+// ═══════════════════════════════════════════════════════════════════
+grpCore   = "⚙️ Core"
+grpRisk   = "💰 Risk"
+grpFilter = "🔍 Filters"
+grpSess   = "🕐 Session"
+grpVis    = "🎨 Visuals"
+grpWebhook= "🔗 Webhook Payload"
+
+// --- Core
+htfInput  = input.timeframe("240", "Higher TF (Trend Filter)", options=["60","120","240","360","D"], group=grpCore)
+minScore  = input.int(5, "Min Confluence Score (/6)", minval=3, maxval=6, group=grpCore)
+
+// --- Risk
+tpPct     = input.float(3.0, "TP (%)", minval=0.5, step=0.1, group=grpRisk)
+slPct     = input.float(1.5, "SL (%)", minval=0.3, step=0.1, group=grpRisk)
+sizePct   = input.float(30,  "Position Size (%)", minval=1, maxval=100, group=grpRisk)
+useTrail  = input.bool(true, "ATR Trailing Stop", group=grpRisk)
+trailMult = input.float(2.0, "Trail ATR Multiplier", minval=0.5, step=0.1, group=grpRisk)
+trailActPct = input.float(1.2, "Activate Trail After (% profit)", minval=0.1, step=0.1, group=grpRisk)
+
+// --- Filters
+adxThresh = input.float(22, "ADX Minimum", minval=10, group=grpFilter)
+atrMaxMult= input.float(1.5,"Max ATR (vs 50-bar avg)", minval=1, step=0.1, group=grpFilter)
+
+// --- Session
+useSession = input.bool(true, "Session filter (London+NY)", group=grpSess)
+sessionStr = input.session("1200-1700", "Session", group=grpSess)
+noFriPM    = input.bool(true, "Block Friday after 15:00", group=grpSess)
+cooldown   = input.int(3, "Cooldown (bars)", minval=0, group=grpSess)
+
+// --- Visual
+showSig   = input.bool(true, "Plot signals", group=grpVis)
+showLvls  = input.bool(true, "Plot TP/SL/Trail levels", group=grpVis)
+showTable = input.bool(true, "Info table", group=grpVis)
+
+// --- Webhook
+botId     = input.string("", "Bot/Strategy ID (for webhook)", group=grpWebhook)
+
+// ═══════════════════════════════════════════════════════════════════
+//                          INDICATORS
+// ═══════════════════════════════════════════════════════════════════
+emaF = ta.ema(close, 50)
+emaS = ta.ema(close, 200)
+rsi  = ta.rsi(close, 14)
+[macdLine, sigLine, macdHist] = ta.macd(close, 12, 26, 9)
+[diP, diM, adx] = ta.dmi(14, 14)
+atr    = ta.atr(14)
+atrAvg = ta.sma(atr, 50)
+[bbMid, bbUp, bbLo] = ta.bb(close, 20, 2.0)
+stK = ta.sma(ta.stoch(close, high, low, 14), 3)
+stD = ta.sma(stK, 3)
+
+// --- HTF
+[htfEmaF, htfEmaS] = request.security(syminfo.tickerid, htfInput,
+     [ta.ema(close, 50), ta.ema(close, 200)], lookahead=barmerge.lookahead_off)
+htfBull = htfEmaF > htfEmaS and close > htfEmaS
+htfBear = htfEmaF < htfEmaS and close < htfEmaS
+
+// ═══════════════════════════════════════════════════════════════════
+//                          SESSION / COOLDOWN
+// ═══════════════════════════════════════════════════════════════════
+inSession = not useSession or not na(time(timeframe.period, sessionStr))
+okFriday  = not (noFriPM and dayofweek == dayofweek.friday and hour >= 15)
+timeOk    = inSession and okFriday
+
+var int lastExitBar = -1000
+sinceExit = bar_index - lastExitBar
+cooldownOk = sinceExit > cooldown
+
+// ═══════════════════════════════════════════════════════════════════
+//                          SCORING
+// ═══════════════════════════════════════════════════════════════════
+volOk = atr < atrAvg * atrMaxMult
+
+lTrend = emaF > emaS and close > emaF              ? 1 : 0
+lHtf   = htfBull                                    ? 1 : 0
+lRsi   = rsi >= 40 and rsi <= 65                    ? 1 : 0
+lMacd  = macdLine > sigLine and macdHist > nz(macdHist[1], 0) ? 1 : 0
+lAdx   = adx > adxThresh and diP > diM              ? 1 : 0
+lStoch = ta.crossover(stK, stD) and stK < 80        ? 1 : 0
+longScore = lTrend + lHtf + lRsi + lMacd + lAdx + lStoch
+
+sTrend = emaF < emaS and close < emaF               ? 1 : 0
+sHtf   = htfBear                                    ? 1 : 0
+sRsi   = rsi >= 35 and rsi <= 60                    ? 1 : 0
+sMacd  = macdLine < sigLine and macdHist < nz(macdHist[1], 0) ? 1 : 0
+sAdx   = adx > adxThresh and diM > diP              ? 1 : 0
+sStoch = ta.crossunder(stK, stD) and stK > 20       ? 1 : 0
+shortScore = sTrend + sHtf + sRsi + sMacd + sAdx + sStoch
+
+// ═══════════════════════════════════════════════════════════════════
+//                          VIRTUAL POSITION STATE
+// ═══════════════════════════════════════════════════════════════════
+var string posSide   = "FLAT"
+var float  entryP    = na
+var float  slP       = na
+var float  tpP       = na
+var float  trailP    = na
+var bool   trailOn   = false
+var int    openBar   = na
+
+longEntry  = posSide == "FLAT" and longScore  >= minScore and volOk and timeOk and cooldownOk
+shortEntry = posSide == "FLAT" and shortScore >= minScore and volOk and timeOk and cooldownOk
+
+// --- Open position
+if longEntry and barstate.isconfirmed
+    posSide := "LONG"
+    entryP  := close
+    slP     := close * (1 - slPct / 100)
+    tpP     := close * (1 + tpPct / 100)
+    trailP  := slP
+    trailOn := false
+    openBar := bar_index
+    payload = '{"bot":"' + botId + '","action":"BUY","pair":"' + syminfo.ticker + '","entry":' + str.tostring(close, "#.#####") + ',"sl":' + str.tostring(slP, "#.#####") + ',"tp":' + str.tostring(tpP, "#.#####") + ',"size_pct":' + str.tostring(sizePct) + ',"score":' + str.tostring(longScore) + '}'
+    alert(payload, alert.freq_once_per_bar_close)
+
+if shortEntry and barstate.isconfirmed
+    posSide := "SHORT"
+    entryP  := close
+    slP     := close * (1 + slPct / 100)
+    tpP     := close * (1 - tpPct / 100)
+    trailP  := slP
+    trailOn := false
+    openBar := bar_index
+    payload = '{"bot":"' + botId + '","action":"SELL","pair":"' + syminfo.ticker + '","entry":' + str.tostring(close, "#.#####") + ',"sl":' + str.tostring(slP, "#.#####") + ',"tp":' + str.tostring(tpP, "#.#####") + ',"size_pct":' + str.tostring(sizePct) + ',"score":' + str.tostring(shortScore) + '}'
+    alert(payload, alert.freq_once_per_bar_close)
+
+// ═══════════════════════════════════════════════════════════════════
+//                          TRAILING STOP LOGIC
+// ═══════════════════════════════════════════════════════════════════
+if useTrail and posSide == "LONG"
+    profitPct = (close - entryP) / entryP * 100
+    if profitPct >= trailActPct
+        if not trailOn
+            trailOn := true
+            alert('{"bot":"' + botId + '","action":"TRAIL_ON","pair":"' + syminfo.ticker + '"}', alert.freq_once_per_bar_close)
+    if trailOn
+        newT = close - atr * trailMult
+        if newT > nz(trailP, newT)
+            trailP := newT
+            alert('{"bot":"' + botId + '","action":"TRAIL_UPDATE","pair":"' + syminfo.ticker + '","trail":' + str.tostring(trailP, "#.#####") + '}', alert.freq_once_per_bar_close)
+
+if useTrail and posSide == "SHORT"
+    profitPct = (entryP - close) / entryP * 100
+    if profitPct >= trailActPct
+        if not trailOn
+            trailOn := true
+            alert('{"bot":"' + botId + '","action":"TRAIL_ON","pair":"' + syminfo.ticker + '"}', alert.freq_once_per_bar_close)
+    if trailOn
+        newT = close + atr * trailMult
+        if newT < nz(trailP, newT)
+            trailP := newT
+            alert('{"bot":"' + botId + '","action":"TRAIL_UPDATE","pair":"' + syminfo.ticker + '","trail":' + str.tostring(trailP, "#.#####") + '}', alert.freq_once_per_bar_close)
+
+// ═══════════════════════════════════════════════════════════════════
+//                          EXIT CHECKS (TP / SL / Trail)
+// ═══════════════════════════════════════════════════════════════════
+if posSide == "LONG"
+    effSL = useTrail and trailOn ? math.max(slP, trailP) : slP
+    if low <= effSL
+        reason = trailOn and effSL > slP ? "TRAIL" : "SL"
+        alert('{"bot":"' + botId + '","action":"CLOSE_LONG","pair":"' + syminfo.ticker + '","reason":"' + reason + '","exit":' + str.tostring(effSL, "#.#####") + '}', alert.freq_once_per_bar_close)
+        posSide     := "FLAT"
+        lastExitBar := bar_index
+        trailOn     := false
+    else if high >= tpP
+        alert('{"bot":"' + botId + '","action":"CLOSE_LONG","pair":"' + syminfo.ticker + '","reason":"TP","exit":' + str.tostring(tpP, "#.#####") + '}', alert.freq_once_per_bar_close)
+        posSide     := "FLAT"
+        lastExitBar := bar_index
+        trailOn     := false
+
+if posSide == "SHORT"
+    effSL = useTrail and trailOn ? math.min(slP, trailP) : slP
+    if high >= effSL
+        reason = trailOn and effSL < slP ? "TRAIL" : "SL"
+        alert('{"bot":"' + botId + '","action":"CLOSE_SHORT","pair":"' + syminfo.ticker + '","reason":"' + reason + '","exit":' + str.tostring(effSL, "#.#####") + '}', alert.freq_once_per_bar_close)
+        posSide     := "FLAT"
+        lastExitBar := bar_index
+        trailOn     := false
+    else if low <= tpP
+        alert('{"bot":"' + botId + '","action":"CLOSE_SHORT","pair":"' + syminfo.ticker + '","reason":"TP","exit":' + str.tostring(tpP, "#.#####") + '}', alert.freq_once_per_bar_close)
+        posSide     := "FLAT"
+        lastExitBar := bar_index
+        trailOn     := false
+
+// ═══════════════════════════════════════════════════════════════════
+//                          PLOTS
+// ═══════════════════════════════════════════════════════════════════
+plot(emaF, "EMA50",  color=color.new(color.aqua,   0), linewidth=1)
+plot(emaS, "EMA200", color=color.new(color.orange, 0), linewidth=2)
+
+plotshape(showSig and longEntry,  title="BUY",  location=location.belowbar, style=shape.triangleup,   color=color.lime, size=size.small, text="BUY")
+plotshape(showSig and shortEntry, title="SELL", location=location.abovebar, style=shape.triangledown, color=color.red,  size=size.small, text="SELL")
+
+plot(showLvls and posSide != "FLAT" ? tpP : na, "TP", color=color.green, linewidth=1, style=plot.style_linebr)
+plot(showLvls and posSide == "LONG"  ? (trailOn ? math.max(slP, trailP) : slP) : na, "SL/Trail Long",  color=color.red, linewidth=1, style=plot.style_linebr)
+plot(showLvls and posSide == "SHORT" ? (trailOn ? math.min(slP, trailP) : slP) : na, "SL/Trail Short", color=color.red, linewidth=1, style=plot.style_linebr)
+
+bgcolor(timeOk ? na : color.new(color.gray, 92), title="Off-session")
+
+// ═══════════════════════════════════════════════════════════════════
+//                          INFO TABLE
+// ═══════════════════════════════════════════════════════════════════
+if showTable and barstate.islast
+    var table t = table.new(position.top_right, 2, 12, border_width=1)
+    table.cell(t, 0, 0, "WaveBot",       bgcolor=color.new(color.blue, 40), text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 0, syminfo.ticker,  bgcolor=color.new(color.blue, 40), text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 1, "HTF Trend")
+    table.cell(t, 1, 1, htfBull ? "BULL" : htfBear ? "BEAR" : "FLAT", text_color = htfBull ? color.lime : htfBear ? color.red : color.gray)
+    table.cell(t, 0, 2, "ADX");          table.cell(t, 1, 2, str.tostring(adx, "#.#"),  text_color = adx > adxThresh ? color.lime : color.gray)
+    table.cell(t, 0, 3, "RSI");          table.cell(t, 1, 3, str.tostring(rsi, "#.#"))
+    table.cell(t, 0, 4, "Vol OK");       table.cell(t, 1, 4, volOk ? "YES" : "NO", text_color = volOk ? color.lime : color.red)
+    table.cell(t, 0, 5, "Session");      table.cell(t, 1, 5, timeOk ? "OPEN" : "CLOSED", text_color = timeOk ? color.lime : color.red)
+    table.cell(t, 0, 6, "Long Score");   table.cell(t, 1, 6, str.tostring(longScore)  + "/6", text_color = longScore  >= minScore ? color.lime : color.gray)
+    table.cell(t, 0, 7, "Short Score");  table.cell(t, 1, 7, str.tostring(shortScore) + "/6", text_color = shortScore >= minScore ? color.red  : color.gray)
+    table.cell(t, 0, 8, "Position");     table.cell(t, 1, 8, posSide, text_color = posSide == "LONG" ? color.lime : posSide == "SHORT" ? color.red : color.gray)
+    table.cell(t, 0, 9, "Entry");        table.cell(t, 1, 9, posSide != "FLAT" ? str.tostring(entryP, "#.#####") : "—")
+    table.cell(t, 0, 10, "TP / SL");     table.cell(t, 1, 10, posSide != "FLAT" ? (str.tostring(tpP, "#.#####") + " / " + str.tostring(slP, "#.#####")) : "—")
+    table.cell(t, 0, 11, "Trail");       table.cell(t, 1, 11, trailOn ? str.tostring(trailP, "#.#####") : "OFF", text_color = trailOn ? color.yellow : color.gray)
+
+// ═══════════════════════════════════════════════════════════════════
+//                          ALERT CONDITIONS (for TradingView UI)
+// ═══════════════════════════════════════════════════════════════════
+alertcondition(longEntry,  "WaveBot LONG Entry",  "WaveBot: LONG entry signal on {{ticker}}")
+alertcondition(shortEntry, "WaveBot SHORT Entry", "WaveBot: SHORT entry signal on {{ticker}}")

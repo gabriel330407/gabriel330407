@@ -1,0 +1,245 @@
+// © WaveBot - Confluence Multi-Indicator Forex Strategy
+// Designed for TradingView Premium - Multi-Timeframe automated signals
+// TP: 3% | SL: 1.5% | Risk per trade: 30% of equity | Max 2 open positions
+//@version=5
+strategy("WaveBot Strategy | Confluence MTF",
+     shorttitle              = "WaveBot Strat",
+     overlay                 = true,
+     initial_capital         = 10000,
+     default_qty_type        = strategy.percent_of_equity,
+     default_qty_value       = 30,
+     pyramiding              = 1,
+     commission_type         = strategy.commission.percent,
+     commission_value        = 0.02,
+     slippage                = 2,
+     process_orders_on_close = true,
+     calc_on_every_tick      = false,
+     max_bars_back           = 2000,
+     max_lines_count         = 100,
+     max_labels_count        = 200,
+     max_boxes_count         = 100)
+
+// ═══════════════════════════════════════════════════════════════════
+//                          USER INPUTS
+// ═══════════════════════════════════════════════════════════════════
+grpStrategy  = "⚙️ Strategy Core"
+grpRisk      = "💰 Risk Management"
+grpFilters   = "🔍 Entry Filters"
+grpSession   = "🕐 Session Filter"
+grpVisual    = "🎨 Visuals"
+grpAlerts    = "🔔 Alerts"
+
+// --- Core
+htfInput     = input.timeframe("240", "Higher TF (Trend Filter)", options=["60","120","240","360","D"], group=grpStrategy)
+minScore     = input.int(5, "Minimum Confluence Score (/6)", minval=3, maxval=6, group=grpStrategy,
+     tooltip="Number of conditions that must agree. 5-6 = very selective (higher win rate).")
+
+// --- Risk
+tpPct        = input.float(3.0,  "Take Profit (%)", minval=0.5, step=0.1, group=grpRisk)
+slPct        = input.float(1.5,  "Stop Loss (%)",   minval=0.3, step=0.1, group=grpRisk)
+useTrail     = input.bool(true,  "Enable ATR Trailing Stop", group=grpRisk)
+trailMult    = input.float(2.0,  "Trail ATR Multiplier", minval=0.5, step=0.1, group=grpRisk)
+trailActPct  = input.float(1.2,  "Activate Trail After (% profit)", minval=0.1, step=0.1, group=grpRisk)
+riskPct      = input.float(30.0, "Position Size (% of equity)", minval=1, maxval=100, group=grpRisk)
+
+// --- Filters
+emaFast      = input.int(50,  "EMA Fast",        minval=5,  group=grpFilters)
+emaSlow      = input.int(200, "EMA Slow",        minval=20, group=grpFilters)
+rsiLen       = input.int(14,  "RSI Length",      minval=2,  group=grpFilters)
+rsiPBLong    = input.int(40,  "RSI Long Pullback Min", group=grpFilters)
+rsiPBLongMx  = input.int(65,  "RSI Long Pullback Max", group=grpFilters)
+rsiPBShort   = input.int(35,  "RSI Short Pullback Min", group=grpFilters)
+rsiPBShortMx = input.int(60,  "RSI Short Pullback Max", group=grpFilters)
+adxLen       = input.int(14,  "ADX Length",      minval=5,  group=grpFilters)
+adxThresh    = input.float(22, "ADX Minimum",    minval=10, group=grpFilters)
+atrLen       = input.int(14,  "ATR Length",      minval=5,  group=grpFilters)
+atrMaxMult   = input.float(1.5,"ATR Max (vs avg)",minval=1, step=0.1, group=grpFilters,
+     tooltip="Skip entries when volatility > this × 50-bar ATR average")
+bbLen        = input.int(20,  "BB Length",       group=grpFilters)
+bbMult       = input.float(2.0,"BB Multiplier",  group=grpFilters)
+stochK       = input.int(14,  "Stoch %K",        group=grpFilters)
+stochD       = input.int(3,   "Stoch %D",        group=grpFilters)
+stochSm      = input.int(3,   "Stoch Smooth",    group=grpFilters)
+
+// --- Session
+useSession   = input.bool(true, "Trade London+NY Overlap Only", group=grpSession)
+sessionStr   = input.session("1200-1700", "Session (exchange time)", group=grpSession,
+     tooltip="Default 12:00-17:00 = London/NY overlap. Adjust to your chart timezone.")
+noFriPM      = input.bool(true, "Block Friday after 15:00", group=grpSession)
+cooldownBars = input.int(3, "Cooldown between trades (bars)", minval=0, group=grpSession)
+
+// --- Visual
+showSig      = input.bool(true, "Plot signals", group=grpVisual)
+showTable    = input.bool(true, "Show info table", group=grpVisual)
+showLevels   = input.bool(true, "Plot TP/SL lines", group=grpVisual)
+
+// --- Alerts
+sendAlerts   = input.bool(true, "Emit alerts (entry/exit/trail)", group=grpAlerts)
+
+// ═══════════════════════════════════════════════════════════════════
+//                          INDICATORS - CURRENT TF
+// ═══════════════════════════════════════════════════════════════════
+emaF   = ta.ema(close, emaFast)
+emaS   = ta.ema(close, emaSlow)
+rsi    = ta.rsi(close, rsiLen)
+[macdLine, sigLine, macdHist] = ta.macd(close, 12, 26, 9)
+[diPlus, diMinus, adx] = ta.dmi(adxLen, adxLen)
+atr    = ta.atr(atrLen)
+atrAvg = ta.sma(atr, 50)
+[bbMid, bbUp, bbLo] = ta.bb(close, bbLen, bbMult)
+stK    = ta.sma(ta.stoch(close, high, low, stochK), stochSm)
+stD    = ta.sma(stK, stochD)
+
+// ═══════════════════════════════════════════════════════════════════
+//                          HIGHER TF CONFIRMATION
+// ═══════════════════════════════════════════════════════════════════
+f_htfPack() =>
+    emaF_htf = ta.ema(close, emaFast)
+    emaS_htf = ta.ema(close, emaSlow)
+    rsi_htf  = ta.rsi(close, rsiLen)
+    [diP_htf, diM_htf, adx_htf] = ta.dmi(adxLen, adxLen)
+    [emaF_htf, emaS_htf, rsi_htf, adx_htf]
+
+[htfEmaF, htfEmaS, htfRsi, htfAdx] = request.security(syminfo.tickerid, htfInput,
+     f_htfPack(), lookahead=barmerge.lookahead_off)
+
+htfBull = htfEmaF > htfEmaS and close > htfEmaS
+htfBear = htfEmaF < htfEmaS and close < htfEmaS
+
+// ═══════════════════════════════════════════════════════════════════
+//                          SESSION / TIME FILTERS
+// ═══════════════════════════════════════════════════════════════════
+inSession = not useSession or not na(time(timeframe.period, sessionStr))
+okFriday  = not (noFriPM and dayofweek == dayofweek.friday and hour >= 15)
+timeOk    = inSession and okFriday
+
+// Cooldown tracker
+var int lastExitBar = -1000
+sinceExit = bar_index - lastExitBar
+cooldownOk = sinceExit > cooldownBars
+
+// ═══════════════════════════════════════════════════════════════════
+//                          CONFLUENCE SCORING
+// ═══════════════════════════════════════════════════════════════════
+volOk   = atr < atrAvg * atrMaxMult
+
+// LONG score (out of 6)
+lTrend  = emaF > emaS and close > emaF             ? 1 : 0
+lHtf    = htfBull                                   ? 1 : 0
+lRsi    = rsi >= rsiPBLong and rsi <= rsiPBLongMx  ? 1 : 0
+lMacd   = macdHist > macdHist[1] and macdLine > sigLine ? 1 : 0
+lAdx    = adx > adxThresh and diPlus > diMinus     ? 1 : 0
+lStoch  = ta.crossover(stK, stD) and stK < 80      ? 1 : 0
+longScore  = lTrend + lHtf + lRsi + lMacd + lAdx + lStoch
+
+// SHORT score (out of 6)
+sTrend  = emaF < emaS and close < emaF             ? 1 : 0
+sHtf    = htfBear                                   ? 1 : 0
+sRsi    = rsi >= rsiPBShort and rsi <= rsiPBShortMx ? 1 : 0
+sMacd   = macdHist < macdHist[1] and macdLine < sigLine ? 1 : 0
+sAdx    = adx > adxThresh and diMinus > diPlus     ? 1 : 0
+sStoch  = ta.crossunder(stK, stD) and stK > 20     ? 1 : 0
+shortScore = sTrend + sHtf + sRsi + sMacd + sAdx + sStoch
+
+// ═══════════════════════════════════════════════════════════════════
+//                          ENTRY CONDITIONS
+// ═══════════════════════════════════════════════════════════════════
+longEntry  = longScore  >= minScore and volOk and timeOk and cooldownOk and strategy.position_size == 0
+shortEntry = shortScore >= minScore and volOk and timeOk and cooldownOk and strategy.position_size == 0
+
+// ═══════════════════════════════════════════════════════════════════
+//                          ORDER EXECUTION
+// ═══════════════════════════════════════════════════════════════════
+var float entryPrice = na
+var float slPrice    = na
+var float tpPrice    = na
+var float trailPrice = na
+var bool  trailActive = false
+
+if longEntry
+    entryPrice := close
+    slPrice    := close * (1 - slPct / 100)
+    tpPrice    := close * (1 + tpPct / 100)
+    trailPrice := slPrice
+    trailActive := false
+    strategy.entry("LONG", strategy.long, qty=strategy.equity * (riskPct/100) / close,
+         alert_message='{"action":"BUY","pair":"{{ticker}}","entry":{{close}},"sl":' + str.tostring(slPrice, "#.#####") + ',"tp":' + str.tostring(tpPrice, "#.#####") + ',"size_pct":' + str.tostring(riskPct) + '}')
+
+if shortEntry
+    entryPrice := close
+    slPrice    := close * (1 + slPct / 100)
+    tpPrice    := close * (1 - tpPct / 100)
+    trailPrice := slPrice
+    trailActive := false
+    strategy.entry("SHORT", strategy.short, qty=strategy.equity * (riskPct/100) / close,
+         alert_message='{"action":"SELL","pair":"{{ticker}}","entry":{{close}},"sl":' + str.tostring(slPrice, "#.#####") + ',"tp":' + str.tostring(tpPrice, "#.#####") + ',"size_pct":' + str.tostring(riskPct) + '}')
+
+// --- Trailing stop logic (ATR-based, activates after profit threshold)
+if useTrail and strategy.position_size > 0
+    profitPct = (close - entryPrice) / entryPrice * 100
+    if profitPct >= trailActPct
+        trailActive := true
+    if trailActive
+        newTrail = close - atr * trailMult
+        trailPrice := math.max(nz(trailPrice, newTrail), newTrail)
+
+if useTrail and strategy.position_size < 0
+    profitPct = (entryPrice - close) / entryPrice * 100
+    if profitPct >= trailActPct
+        trailActive := true
+    if trailActive
+        newTrail = close + atr * trailMult
+        trailPrice := math.min(nz(trailPrice, newTrail), newTrail)
+
+// --- Exit
+finalLongSL  = useTrail and trailActive ? math.max(slPrice, trailPrice) : slPrice
+finalShortSL = useTrail and trailActive ? math.min(slPrice, trailPrice) : slPrice
+
+if strategy.position_size > 0
+    strategy.exit("Exit LONG", "LONG", stop=finalLongSL, limit=tpPrice,
+         alert_message='{"action":"CLOSE_LONG","pair":"{{ticker}}","reason":"TP/SL/Trail"}')
+
+if strategy.position_size < 0
+    strategy.exit("Exit SHORT", "SHORT", stop=finalShortSL, limit=tpPrice,
+         alert_message='{"action":"CLOSE_SHORT","pair":"{{ticker}}","reason":"TP/SL/Trail"}')
+
+// Track exit bar for cooldown
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    lastExitBar := bar_index
+
+// ═══════════════════════════════════════════════════════════════════
+//                          TRAILING UPDATE ALERTS
+// ═══════════════════════════════════════════════════════════════════
+if sendAlerts and trailActive and ta.change(trailPrice) != 0
+    alert('{"action":"TRAIL_UPDATE","pair":"' + syminfo.ticker + '","trail":' + str.tostring(trailPrice, "#.#####") + '}', alert.freq_once_per_bar_close)
+
+// ═══════════════════════════════════════════════════════════════════
+//                          PLOTS
+// ═══════════════════════════════════════════════════════════════════
+plot(emaF, "EMA Fast", color=color.new(color.aqua, 0), linewidth=1)
+plot(emaS, "EMA Slow", color=color.new(color.orange, 0), linewidth=2)
+
+plotshape(showSig and longEntry,  title="Long",  location=location.belowbar, style=shape.triangleup,   color=color.lime,   size=size.small, text="BUY")
+plotshape(showSig and shortEntry, title="Short", location=location.abovebar, style=shape.triangledown, color=color.red,    size=size.small, text="SELL")
+
+plot(showLevels and strategy.position_size != 0 ? tpPrice : na, "TP", color=color.green, linewidth=1, style=plot.style_linebr)
+plot(showLevels and strategy.position_size > 0 ? finalLongSL  : strategy.position_size < 0 ? finalShortSL : na, "SL/Trail", color=color.red, linewidth=1, style=plot.style_linebr)
+
+bgcolor(timeOk ? na : color.new(color.gray, 92), title="Off-session")
+
+// ═══════════════════════════════════════════════════════════════════
+//                          INFO TABLE
+// ═══════════════════════════════════════════════════════════════════
+if showTable and barstate.islast
+    var table t = table.new(position.top_right, 2, 10, border_width=1)
+    table.cell(t, 0, 0, "WaveBot",          bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 0, syminfo.ticker,      bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 1, "HTF Trend");        table.cell(t, 1, 1, htfBull ? "BULL" : htfBear ? "BEAR" : "—", text_color = htfBull ? color.lime : htfBear ? color.red : color.gray)
+    table.cell(t, 0, 2, "ADX");              table.cell(t, 1, 2, str.tostring(adx, "#.#"),  text_color = adx > adxThresh ? color.lime : color.gray)
+    table.cell(t, 0, 3, "RSI");              table.cell(t, 1, 3, str.tostring(rsi, "#.#"))
+    table.cell(t, 0, 4, "ATR OK");           table.cell(t, 1, 4, volOk ? "YES" : "NO",      text_color = volOk ? color.lime : color.red)
+    table.cell(t, 0, 5, "Session");          table.cell(t, 1, 5, timeOk ? "OPEN" : "CLOSED",text_color = timeOk ? color.lime : color.red)
+    table.cell(t, 0, 6, "Long Score");       table.cell(t, 1, 6, str.tostring(longScore) + "/6", text_color = longScore >= minScore ? color.lime : color.gray)
+    table.cell(t, 0, 7, "Short Score");      table.cell(t, 1, 7, str.tostring(shortScore) + "/6",text_color = shortScore >= minScore ? color.red  : color.gray)
+    table.cell(t, 0, 8, "Position");         table.cell(t, 1, 8, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT")
+    table.cell(t, 0, 9, "Trail Active");     table.cell(t, 1, 9, trailActive ? "YES" : "NO", text_color = trailActive ? color.yellow : color.gray)
