@@ -1,0 +1,204 @@
+//@version=5
+// =============================================================================
+//  DBB Stocks Swing - Double Bollinger Bands (4,4,Open) + (20,2,Close)
+// =============================================================================
+//  מסחר סווינג למניות - אותות איכותיים, נדירים, בעלי משקל סטטיסטי גבוה
+//  - מסגרת זמן: H4 / Daily (ברירת מחדל Daily)
+//  - מסגרת זמן מגמה: Weekly
+//  - אין מינוף או מינוף נמוך (X1.5 max)
+//  - יחס סיכון-רווח 1:2 לפחות
+//  - מתאים לדוחות / תיקונים גדולים / היפוכים מבניים
+// =============================================================================
+
+strategy("DBB Stocks Swing",
+     shorttitle             = "DBB-SW",
+     overlay                = true,
+     initial_capital        = 10000,
+     default_qty_type       = strategy.percent_of_equity,
+     default_qty_value      = 25,
+     pyramiding             = 1,
+     commission_type        = strategy.commission.percent,
+     commission_value       = 0.05,
+     slippage               = 3,
+     process_orders_on_close= true,
+     calc_on_every_tick     = false)
+
+// ---------- INPUTS ----------
+gBB    = "Double Bollinger"
+gFilt  = "Filters"
+gRisk  = "Risk (Swing)"
+
+redLen   = input.int(4,  "Red BB Length",   minval=2, group=gBB)
+redMult  = input.float(4.0, "Red BB StdDev", minval=2.0, step=0.1, group=gBB)
+whiteLen = input.int(20, "White BB Length", minval=10, group=gBB)
+whiteMult= input.float(2.0, "White BB StdDev", minval=1.0, step=0.1, group=gBB)
+
+htfInput   = input.timeframe("W", "HTF for trend bias", options=["D","W","M"], group=gFilt)
+rsiLen     = input.int(14, "RSI Length", minval=2, group=gFilt)
+rsiLongMax = input.float(35, "RSI Long Max",  minval=10, maxval=50, group=gFilt)
+rsiShortMin= input.float(65, "RSI Short Min", minval=50, maxval=90, group=gFilt)
+useSqueezeBlock = input.bool(true, "Block during White-BB squeeze", group=gFilt)
+squeezeMinPct   = input.float(2.0, "Min White-BB width (% of price)", minval=0.5, step=0.1, group=gFilt)
+useScaleIn      = input.bool(true, "Scale in: 1/3 at touch, 2/3 on confirmation close", group=gFilt)
+
+riskPct    = input.float(2.0,  "Risk per trade %",   minval=0.1, step=0.1, group=gRisk)
+leverage   = input.float(1.5,  "Leverage cap",       minval=1.0, maxval=3.0, step=0.1, group=gRisk)
+slBuffer   = input.float(0.5,  "SL buffer (× sigma)", minval=0.0, step=0.1, group=gRisk)
+maxLossPct = input.float(4.0,  "Hard SL cap (%)",    minval=1.0, step=0.5, group=gRisk)
+useTP1Half = input.bool(true,  "Close 50% at MA20 (TP1)", group=gRisk)
+useBE      = input.bool(true,  "Move SL to BE after TP1", group=gRisk)
+cooldown   = input.int(5, "Cooldown bars after exit", minval=0, group=gRisk)
+
+// ---------- DOUBLE BOLLINGER BANDS ----------
+redBasis   = ta.sma(open,  redLen)
+redDev     = ta.stdev(open, redLen) * redMult
+redUpper   = redBasis + redDev
+redLower   = redBasis - redDev
+
+whiteBasis = ta.sma(close, whiteLen)
+whiteDev   = ta.stdev(close, whiteLen) * whiteMult
+whiteUpper = whiteBasis + whiteDev
+whiteLower = whiteBasis - whiteDev
+
+// ---------- HTF TREND BIAS ----------
+htfTrend() =>
+    wb = ta.sma(close, whiteLen)
+    [wb, close]
+[htfBasis, htfClose] = request.security(syminfo.tickerid, htfInput, htfTrend(), lookahead=barmerge.lookahead_off)
+htfBull = htfClose > htfBasis
+htfBear = htfClose < htfBasis
+
+// ---------- INDICATORS ----------
+rsi = ta.rsi(close, rsiLen)
+bbWidthPct = (whiteUpper - whiteLower) / whiteBasis * 100
+notSqueezed = not useSqueezeBlock or bbWidthPct >= squeezeMinPct
+
+var int lastExitBar = -1000
+cooldownOk = (bar_index - lastExitBar) > cooldown
+
+// ---------- SIGNALS ----------
+touchedLower = low  <= redLower
+touchedUpper = high >= redUpper
+
+bullReversal = touchedLower and close > open and close > redLower
+bearReversal = touchedUpper and close < open and close < redUpper
+
+flat   = strategy.position_size == 0
+
+// Touch entry (partial) + confirmation entry (rest)
+touchLong  = touchedLower    and rsi < rsiLongMax  and htfBull and notSqueezed and cooldownOk and flat
+touchShort = touchedUpper    and rsi > rsiShortMin and htfBear and notSqueezed and cooldownOk and flat
+confLong   = bullReversal    and rsi < rsiLongMax  and htfBull and notSqueezed and cooldownOk
+confShort  = bearReversal    and rsi > rsiShortMin and htfBear and notSqueezed and cooldownOk
+
+// ---------- ORDERS ----------
+var float entryP = na
+var float slP    = na
+var float tp1P   = na
+var float tp2P   = na
+var bool  beMoved = false
+
+sigmaSize = redDev / redMult
+
+calcQty(entryPrice, stopPrice, isLong) =>
+    risk = isLong ? entryPrice - stopPrice : stopPrice - entryPrice
+    rawQty = risk > 0 ? (strategy.equity * riskPct / 100) / risk : na
+    maxQty = strategy.equity * leverage / entryPrice
+    math.min(rawQty, maxQty)
+
+// First leg: 1/3 on touch (if scale-in enabled) or full position on confirmation
+if useScaleIn and touchLong
+    entryP := close
+    slCalc  = redLower - sigmaSize * slBuffer
+    slCap   = entryP * (1 - maxLossPct / 100)
+    slP    := math.max(slCalc, slCap)
+    tp1P   := whiteBasis
+    tp2P   := whiteUpper
+    beMoved := false
+    qty = calcQty(entryP, slP, true) / 3.0
+    strategy.entry("LONG", strategy.long, qty=qty)
+
+if useScaleIn and touchShort
+    entryP := close
+    slCalc  = redUpper + sigmaSize * slBuffer
+    slCap   = entryP * (1 + maxLossPct / 100)
+    slP    := math.min(slCalc, slCap)
+    tp1P   := whiteBasis
+    tp2P   := whiteLower
+    beMoved := false
+    qty = calcQty(entryP, slP, false) / 3.0
+    strategy.entry("SHORT", strategy.short, qty=qty)
+
+// Confirmation leg (adds 2/3 if scaled in, or full position if not)
+if confLong and (strategy.position_size >= 0)
+    if strategy.position_size == 0
+        entryP := close
+        slCalc  = redLower - sigmaSize * slBuffer
+        slCap   = entryP * (1 - maxLossPct / 100)
+        slP    := math.max(slCalc, slCap)
+        tp1P   := whiteBasis
+        tp2P   := whiteUpper
+        beMoved := false
+        qty = calcQty(entryP, slP, true)
+        strategy.entry("LONG", strategy.long, qty=qty)
+    else if useScaleIn
+        qty = calcQty(entryP, slP, true) * 2.0/3.0
+        strategy.entry("LONG-ADD", strategy.long, qty=qty)
+
+if confShort and (strategy.position_size <= 0)
+    if strategy.position_size == 0
+        entryP := close
+        slCalc  = redUpper + sigmaSize * slBuffer
+        slCap   = entryP * (1 + maxLossPct / 100)
+        slP    := math.min(slCalc, slCap)
+        tp1P   := whiteBasis
+        tp2P   := whiteLower
+        beMoved := false
+        qty = calcQty(entryP, slP, false)
+        strategy.entry("SHORT", strategy.short, qty=qty)
+    else if useScaleIn
+        qty = calcQty(entryP, slP, false) * 2.0/3.0
+        strategy.entry("SHORT-ADD", strategy.short, qty=qty)
+
+// Move SL to break-even after TP1
+if useBE and not beMoved
+    if strategy.position_size > 0 and high >= tp1P
+        slP := entryP
+        beMoved := true
+    if strategy.position_size < 0 and low <= tp1P
+        slP := entryP
+        beMoved := true
+
+if strategy.position_size > 0
+    if useTP1Half and not beMoved
+        strategy.exit("TP1-L", "LONG", qty_percent=50, limit=tp1P, stop=slP)
+        strategy.exit("TP2-L", "LONG", limit=tp2P, stop=slP)
+    else
+        strategy.exit("TP-L",  "LONG", limit=tp2P, stop=slP)
+
+if strategy.position_size < 0
+    if useTP1Half and not beMoved
+        strategy.exit("TP1-S", "SHORT", qty_percent=50, limit=tp1P, stop=slP)
+        strategy.exit("TP2-S", "SHORT", limit=tp2P, stop=slP)
+    else
+        strategy.exit("TP-S",  "SHORT", limit=tp2P, stop=slP)
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    lastExitBar := bar_index
+
+// ---------- PLOTS ----------
+plot(redUpper,   "Red Upper",   color=color.new(color.red, 20))
+plot(redLower,   "Red Lower",   color=color.new(color.red, 20))
+plot(whiteUpper, "White Upper", color=color.new(color.white, 0))
+plot(whiteLower, "White Lower", color=color.new(color.white, 0))
+plot(whiteBasis, "MA20 (TP1)",  color=color.new(color.yellow, 0), linewidth=2)
+
+plotshape(touchLong,  title="TOUCH-L",   location=location.belowbar, style=shape.circle,        color=color.new(color.lime, 40), size=size.tiny)
+plotshape(touchShort, title="TOUCH-S",   location=location.abovebar, style=shape.circle,        color=color.new(color.red,  40), size=size.tiny)
+plotshape(confLong,   title="CONFIRM-L", location=location.belowbar, style=shape.triangleup,    color=color.lime, size=size.small, text="BUY")
+plotshape(confShort,  title="CONFIRM-S", location=location.abovebar, style=shape.triangledown,  color=color.red,  size=size.small, text="SELL")
+
+bgcolor(notSqueezed ? na : color.new(color.purple, 90))
+
+alertcondition(confLong,  "DBB Swing LONG",  "DBB Swing LONG {{ticker}} @ {{close}}")
+alertcondition(confShort, "DBB Swing SHORT", "DBB Swing SHORT {{ticker}} @ {{close}}")

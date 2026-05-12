@@ -1,0 +1,179 @@
+//@version=5
+// =============================================================================
+//  DBB Indices - Double Bollinger Bands (4,4,Open) + (20,2,Close)
+// =============================================================================
+//  מסחר על מדדים: S&P 500 (ES/SPX), Nasdaq (NQ/NDX), Dow (YM), DAX
+//  - מסגרות זמן מועדפות: M5 / M15 (סקאלפ) או H1 (יומי)
+//  - מדדים נוטים לחזרה לממוצע בגלל הרכב סלי - אסטרטגיה זו מתאימה במיוחד
+//  - שעות מסחר: סינון לפי שעות החפיפה (Premarket / RTH / Power Hour)
+//  - אסטרטגיה משולבת: אותות בכיוון מגמת ה-H1
+// =============================================================================
+
+strategy("DBB Indices",
+     shorttitle             = "DBB-IDX",
+     overlay                = true,
+     initial_capital        = 10000,
+     default_qty_type       = strategy.percent_of_equity,
+     default_qty_value      = 25,
+     pyramiding             = 0,
+     commission_type        = strategy.commission.percent,
+     commission_value       = 0.02,
+     slippage               = 2,
+     process_orders_on_close= true,
+     calc_on_every_tick     = false)
+
+// ---------- INPUTS ----------
+gBB    = "Double Bollinger"
+gFilt  = "Filters"
+gRisk  = "Risk"
+gSess  = "Session"
+
+redLen   = input.int(4,  "Red BB Length",   minval=2, group=gBB)
+redMult  = input.float(4.0, "Red BB StdDev", minval=2.0, step=0.1, group=gBB)
+whiteLen = input.int(20, "White BB Length", minval=10, group=gBB)
+whiteMult= input.float(2.0, "White BB StdDev", minval=1.0, step=0.1, group=gBB)
+
+htfInput   = input.timeframe("60", "HTF for trend bias", options=["15","60","240","D"], group=gFilt)
+rsiLen     = input.int(14, "RSI Length", minval=2, group=gFilt)
+rsiLongMax = input.float(35, "RSI Long Max",  minval=10, maxval=50, group=gFilt)
+rsiShortMin= input.float(65, "RSI Short Min", minval=50, maxval=90, group=gFilt)
+useSqueezeBlock = input.bool(true, "Block during White-BB squeeze", group=gFilt)
+squeezeMinPct   = input.float(0.3, "Min White-BB width (% of price)", minval=0.05, step=0.05, group=gFilt)
+
+riskPct    = input.float(1.5,  "Risk per trade %", minval=0.1, step=0.1, group=gRisk)
+leverage   = input.float(4.0,  "Leverage (indices typically 2x-10x)", minval=1.0, maxval=15.0, step=0.5, group=gRisk)
+slBuffer   = input.float(0.4,  "SL buffer (× sigma)", minval=0.0, step=0.1, group=gRisk)
+maxLossPct = input.float(0.8,  "Hard SL cap (%)", minval=0.2, step=0.1, group=gRisk)
+useTP1Half = input.bool(true,  "Close 50% at MA20 (TP1)", group=gRisk)
+useBE      = input.bool(true,  "Move SL to BE after TP1", group=gRisk)
+
+useSession = input.bool(true, "Session filter (US RTH)", group=gSess)
+sessionStr = input.session("0930-1600", "Session", group=gSess)
+avoidOpen  = input.session("0930-0945", "Avoid first 15min (chop)", group=gSess)
+useEODExit = input.bool(false, "Force-exit before close (intraday)", group=gSess)
+eodTime    = input.session("1555-1600", "EOD exit window", group=gSess)
+cooldown   = input.int(2, "Cooldown bars after exit", minval=0, group=gSess)
+
+// ---------- DOUBLE BOLLINGER BANDS ----------
+redBasis   = ta.sma(open,  redLen)
+redDev     = ta.stdev(open, redLen) * redMult
+redUpper   = redBasis + redDev
+redLower   = redBasis - redDev
+
+whiteBasis = ta.sma(close, whiteLen)
+whiteDev   = ta.stdev(close, whiteLen) * whiteMult
+whiteUpper = whiteBasis + whiteDev
+whiteLower = whiteBasis - whiteDev
+
+// ---------- HTF TREND BIAS ----------
+htfTrend() =>
+    wb = ta.sma(close, whiteLen)
+    [wb, close]
+[htfBasis, htfClose] = request.security(syminfo.tickerid, htfInput, htfTrend(), lookahead=barmerge.lookahead_off)
+htfBull = htfClose > htfBasis
+htfBear = htfClose < htfBasis
+
+// ---------- INDICATORS ----------
+rsi = ta.rsi(close, rsiLen)
+bbWidthPct = (whiteUpper - whiteLower) / whiteBasis * 100
+notSqueezed = not useSqueezeBlock or bbWidthPct >= squeezeMinPct
+
+inSession = not useSession or not na(time(timeframe.period, sessionStr))
+inOpen    = not na(time(timeframe.period, avoidOpen))
+inEOD     = useEODExit and not na(time(timeframe.period, eodTime))
+timeOk    = inSession and not inOpen
+
+var int lastExitBar = -1000
+cooldownOk = (bar_index - lastExitBar) > cooldown
+
+// ---------- SIGNALS ----------
+touchedLower = low  <= redLower
+touchedUpper = high >= redUpper
+
+bullReversal = touchedLower and close > open and close > redLower
+bearReversal = touchedUpper and close < open and close < redUpper
+
+flat     = strategy.position_size == 0
+longSig  = bullReversal and rsi < rsiLongMax  and htfBull and notSqueezed and timeOk and cooldownOk and flat
+shortSig = bearReversal and rsi > rsiShortMin and htfBear and notSqueezed and timeOk and cooldownOk and flat
+
+// ---------- ORDERS ----------
+var float entryP = na
+var float slP    = na
+var float tp1P   = na
+var float tp2P   = na
+var bool  beMoved = false
+
+sigmaSize = redDev / redMult
+
+if longSig
+    entryP := close
+    slCalc  = redLower - sigmaSize * slBuffer
+    slCap   = entryP * (1 - maxLossPct / 100)
+    slP    := math.max(slCalc, slCap)
+    tp1P   := whiteBasis
+    tp2P   := whiteUpper
+    beMoved := false
+    risk = entryP - slP
+    rawQty = risk > 0 ? (strategy.equity * riskPct / 100) / risk : na
+    maxQty = strategy.equity * leverage / entryP
+    qty    = math.min(rawQty, maxQty)
+    strategy.entry("LONG", strategy.long, qty=qty)
+
+if shortSig
+    entryP := close
+    slCalc  = redUpper + sigmaSize * slBuffer
+    slCap   = entryP * (1 + maxLossPct / 100)
+    slP    := math.min(slCalc, slCap)
+    tp1P   := whiteBasis
+    tp2P   := whiteLower
+    beMoved := false
+    risk = slP - entryP
+    rawQty = risk > 0 ? (strategy.equity * riskPct / 100) / risk : na
+    maxQty = strategy.equity * leverage / entryP
+    qty    = math.min(rawQty, maxQty)
+    strategy.entry("SHORT", strategy.short, qty=qty)
+
+if useBE and not beMoved
+    if strategy.position_size > 0 and high >= tp1P
+        slP := entryP
+        beMoved := true
+    if strategy.position_size < 0 and low <= tp1P
+        slP := entryP
+        beMoved := true
+
+if strategy.position_size > 0
+    if useTP1Half and not beMoved
+        strategy.exit("TP1-L", "LONG", qty_percent=50, limit=tp1P, stop=slP)
+        strategy.exit("TP2-L", "LONG", limit=tp2P, stop=slP)
+    else
+        strategy.exit("TP-L",  "LONG", limit=tp2P, stop=slP)
+
+if strategy.position_size < 0
+    if useTP1Half and not beMoved
+        strategy.exit("TP1-S", "SHORT", qty_percent=50, limit=tp1P, stop=slP)
+        strategy.exit("TP2-S", "SHORT", limit=tp2P, stop=slP)
+    else
+        strategy.exit("TP-S",  "SHORT", limit=tp2P, stop=slP)
+
+if inEOD and strategy.position_size != 0
+    strategy.close_all(comment="EOD")
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    lastExitBar := bar_index
+
+// ---------- PLOTS ----------
+plot(redUpper,   "Red Upper",   color=color.new(color.red, 20))
+plot(redLower,   "Red Lower",   color=color.new(color.red, 20))
+plot(whiteUpper, "White Upper", color=color.new(color.white, 0))
+plot(whiteLower, "White Lower", color=color.new(color.white, 0))
+plot(whiteBasis, "MA20 (TP1)",  color=color.new(color.yellow, 0), linewidth=2)
+
+plotshape(longSig,  title="BUY",  location=location.belowbar, style=shape.triangleup,   color=color.lime, size=size.small, text="BUY")
+plotshape(shortSig, title="SELL", location=location.abovebar, style=shape.triangledown, color=color.red,  size=size.small, text="SELL")
+
+bgcolor(timeOk ? na : color.new(color.gray, 92))
+bgcolor(notSqueezed ? na : color.new(color.purple, 90))
+
+alertcondition(longSig,  "DBB Index LONG",  "DBB Index LONG {{ticker}} @ {{close}}")
+alertcondition(shortSig, "DBB Index SHORT", "DBB Index SHORT {{ticker}} @ {{close}}")
