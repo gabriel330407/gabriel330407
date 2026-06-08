@@ -109,7 +109,7 @@ tradingHalted = currentDDPct > maxDDPct
 // =============================================================================
 // Entry: BUY market order for the dynamically computed quantity.
 entryJson = '{"account":"' + accountId + '","action":"BUY","symbol":"' + syminfo.ticker +
-             '","orderType":"MARKET","quantity":' + str.tostring(qty) + '}'
+             '","orderType":"MARKET","quantity":' + str.tostring(int(qty)) + '}'
 
 // Exit: SELL market order flattening the WHOLE currently-held position.
 exitJson  = '{"account":"' + accountId + '","action":"SELL","symbol":"' + syminfo.ticker +
@@ -134,10 +134,12 @@ if justEntered
 
 // =============================================================================
 //  EXIT LOGIC  — pure time-based exit after `holdDays` trading days.
-//  strategy.close queues a market order -> fills at the next bar's open.
+//  A strategy.close queued on bar X fills at the OPEN of bar X+1. The fill bar
+//  is the entry bar (barsHeld 0); queuing at barsHeld == holdDays - 1 therefore
+//  flattens at the open exactly `holdDays` sessions after entry.
 // =============================================================================
 barsHeld   = not na(entryBarIndex) ? bar_index - entryBarIndex : na
-timeToExit = strategy.position_size > 0 and not na(barsHeld) and barsHeld >= holdDays
+timeToExit = strategy.position_size > 0 and not na(barsHeld) and barsHeld >= holdDays - 1
 
 if timeToExit
     strategy.close("PEAD_Long", alert_message = exitJson)
