@@ -1,0 +1,169 @@
+// =============================================================================
+//  PEAD-IBKR : Post-Earnings Announcement Drift Strategy (Long-Only)
+//  Pine Script v5 | Fully automated strategy() with IBKR webhook JSON payloads
+// -----------------------------------------------------------------------------
+//  ANOMALY
+//  -------
+//  The Post-Earnings Announcement Drift (PEAD) anomaly observes that a stock's
+//  price tends to keep drifting in the direction of an earnings surprise for
+//  weeks/months after the report. This strategy harvests the *positive* drift:
+//
+//    1. An earnings event prints on the chart (reaction day).
+//    2. CONCORDANT SIGNAL FILTER:
+//         a) Positive fundamental surprise : Reported EPS > Consensus EPS
+//         b) Positive price reaction       : Close > Close[1]
+//    3. Enter LONG at the OPEN of the NEXT trading session.
+//    4. Hold for exactly N trading days (default 60), then close at the open.
+//       No intraday SL / TP during the hold to avoid premature stop-outs.
+//
+//  EXECUTION
+//  ---------
+//  Uses strategy.entry / strategy.close so trades fire automatically. Each
+//  order carries an `alert_message` containing a standardized JSON payload that
+//  third-party bridges (TradingConnector, Alertatron, Capitalise.ai, etc.)
+//  forward to Interactive Brokers Paper/Live accounts.
+//
+//  NOTE: `request.earnings()` only returns data on real chart symbols that have
+//  earnings history (use a Daily timeframe on a US equity, e.g. NASDAQ:AAPL).
+// =============================================================================
+
+//@version=5
+strategy(
+     title              = "PEAD-IBKR | Post-Earnings Drift (Long)",
+     shorttitle         = "PEAD-IBKR",
+     overlay            = true,
+     pyramiding         = 0,
+     initial_capital    = 100000,                       // mirror "Account Capital" input below
+     currency           = currency.USD,
+     commission_type    = strategy.commission.cash_per_order,
+     commission_value   = 2.5,                          // mirror "Commission / Order" input below
+     calc_on_every_tick = false,
+     process_orders_on_close = false,                   // market orders fill at NEXT bar open
+     default_qty_type   = strategy.fixed,
+     default_qty_value  = 1)
+
+// =============================================================================
+//  INPUTS
+// =============================================================================
+
+// ---- Account / Sizing -------------------------------------------------------
+grpAcct      = "Account & Position Sizing"
+accountId    = input.string("DU0000000", "IBKR Account ID",      group = grpAcct, tooltip = "Your IBKR account id (e.g. DUxxxxxx for paper, Uxxxxxx for live). Injected into the webhook JSON.")
+accountCap   = input.float (100000.0,    "Account Capital ($)",  group = grpAcct, minval = 0, step = 1000, tooltip = "Total trading capital. Keep this equal to the strategy() initial_capital above for consistent backtests.")
+pctPerTrade  = input.float (10.0,        "Capital per Trade (%)",group = grpAcct, minval = 0.1, maxval = 100, step = 0.5, tooltip = "Fixed fraction of capital allocated to each position.")
+
+// ---- PEAD Signal ------------------------------------------------------------
+grpSig       = "PEAD Signal Filters"
+surpriseTh   = input.float (0.0,  "Min EPS Surprise (%)",  group = grpSig, minval = 0, step = 0.5, tooltip = "Reported EPS must beat Consensus EPS by at least this %. 0 = any positive beat qualifies.")
+holdDays     = input.int   (60,   "Hold Period (trading days)", group = grpSig, minval = 1, tooltip = "Bars (trading days on a Daily chart) to hold before closing at the open.")
+
+// ---- Risk / Friction --------------------------------------------------------
+grpRisk      = "Risk & Commission Module"
+commPerOrder = input.float (2.5,  "Commission / Order ($)", group = grpRisk, minval = 0, step = 0.5, tooltip = "Flat commission per order. Round-trip friction = 2 x this value.")
+maxFrictionPct = input.float(0.5, "Max Friction / Position (%)", group = grpRisk, minval = 0, step = 0.1, tooltip = "Skip the trade if round-trip commission exceeds this % of the position's value (protects tiny positions from fee drag).")
+maxDDPct     = input.float (15.0, "Max Portfolio Drawdown (%)", group = grpRisk, minval = 1, maxval = 100, step = 1, tooltip = "Halt ALL new entries once equity falls this % below its peak.")
+
+// =============================================================================
+//  EARNINGS DATA
+//  request.earnings() returns a value only on the bar an earnings report is
+//  released (gaps_on => na on every other bar), so `not na()` flags the event.
+// =============================================================================
+reportedEPS  = request.earnings(syminfo.tickerid, earnings.actual,   gaps = barmerge.gaps_on, ignore_invalid_symbol = true)
+consensusEPS = request.earnings(syminfo.tickerid, earnings.estimate, gaps = barmerge.gaps_on, ignore_invalid_symbol = true)
+
+isEarningsBar = not na(reportedEPS) and not na(consensusEPS)
+
+// EPS surprise as a percentage of the (absolute) consensus estimate.
+// Guard against a zero/na consensus to avoid divide-by-zero.
+epsSurprisePct = isEarningsBar and consensusEPS != 0 ? (reportedEPS - consensusEPS) / math.abs(consensusEPS) * 100.0 : na
+
+// ---- Concordant Signal Filter ----------------------------------------------
+positiveSurprise = isEarningsBar and reportedEPS > consensusEPS and (na(epsSurprisePct) ? false : epsSurprisePct >= surpriseTh)
+positiveReaction = close > close[1]
+concordantLong   = positiveSurprise and positiveReaction
+
+// =============================================================================
+//  POSITION SIZING & COMMISSION FRICTION FILTER
+// =============================================================================
+positionValue = accountCap * (pctPerTrade / 100.0)          // $ allocated to the trade
+qty           = math.floor(positionValue / close)            // whole shares (sized off reaction-day close)
+
+roundTripComm = commPerOrder * 2.0                           // entry + exit commission
+frictionPct   = positionValue > 0 ? roundTripComm / positionValue * 100.0 : na
+
+// Trade is viable only if it buys >=1 share and friction stays under the cap.
+commissionOK  = qty >= 1 and (na(frictionPct) ? false : frictionPct <= maxFrictionPct)
+
+// =============================================================================
+//  MAX PORTFOLIO DRAWDOWN PROTECTION
+//  Track peak equity; once equity sits more than maxDDPct below the peak,
+//  block every new entry (existing positions still exit on their schedule).
+// =============================================================================
+var float peakEquity = strategy.initial_capital
+peakEquity := math.max(peakEquity, strategy.equity)
+currentDDPct  = peakEquity > 0 ? (peakEquity - strategy.equity) / peakEquity * 100.0 : 0.0
+tradingHalted = currentDDPct > maxDDPct
+
+// =============================================================================
+//  WEBHOOK JSON PAYLOADS  (TradingConnector / Alertatron / Capitalise.ai → IBKR)
+// =============================================================================
+// Entry: BUY market order for the dynamically computed quantity.
+entryJson = '{"account":"' + accountId + '","action":"BUY","symbol":"' + syminfo.ticker +
+             '","orderType":"MARKET","quantity":' + str.tostring(int(qty)) + '}'
+
+// Exit: SELL market order flattening the WHOLE currently-held position.
+exitJson  = '{"account":"' + accountId + '","action":"SELL","symbol":"' + syminfo.ticker +
+             '","orderType":"MARKET","quantity":' + str.tostring(math.abs(strategy.position_size), "#") + '}'
+
+// =============================================================================
+//  ENTRY LOGIC
+//  All gates true on the reaction (earnings) day -> strategy.entry queues a
+//  market order that fills at the NEXT bar's open = "following session open".
+// =============================================================================
+flat        = strategy.position_size == 0
+entrySignal = concordantLong and flat and commissionOK and not tradingHalted
+
+if entrySignal
+    strategy.entry("PEAD_Long", strategy.long, qty = qty, alert_message = entryJson)
+
+// Record the bar index of the fill so we can count the holding period.
+var int entryBarIndex = na
+justEntered = strategy.position_size > 0 and strategy.position_size[1] == 0
+if justEntered
+    entryBarIndex := bar_index
+
+// =============================================================================
+//  EXIT LOGIC  — pure time-based exit after `holdDays` trading days.
+//  A strategy.close queued on bar X fills at the OPEN of bar X+1. The fill bar
+//  is the entry bar (barsHeld 0); queuing at barsHeld == holdDays - 1 therefore
+//  flattens at the open exactly `holdDays` sessions after entry.
+// =============================================================================
+barsHeld   = not na(entryBarIndex) ? bar_index - entryBarIndex : na
+timeToExit = strategy.position_size > 0 and not na(barsHeld) and barsHeld >= holdDays - 1
+
+if timeToExit
+    strategy.close("PEAD_Long", alert_message = exitJson)
+    entryBarIndex := na
+
+// =============================================================================
+//  VISUALS
+// =============================================================================
+plotshape(positiveSurprise and positiveReaction, title = "PEAD Long Signal", style = shape.triangleup,   location = location.belowbar, color = color.new(color.green, 0), size = size.small, text = "PEAD")
+plotshape(isEarningsBar and not positiveSurprise, title = "Earnings (skipped)", style = shape.xcross,      location = location.belowbar, color = color.new(color.gray, 40),  size = size.tiny)
+bgcolor(tradingHalted ? color.new(color.red, 88) : na, title = "Drawdown Halt Active")
+
+// ---- Compact status table ---------------------------------------------------
+var table dash = table.new(position.top_right, 2, 6, border_width = 1)
+if barstate.islast
+    table.cell(dash, 0, 0, "PEAD-IBKR",        bgcolor = color.new(color.blue, 0),  text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 0, syminfo.ticker,     bgcolor = color.new(color.blue, 0),  text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 1, "Equity",           text_size = size.small)
+    table.cell(dash, 1, 1, str.tostring(strategy.equity, format.mintick), text_size = size.small)
+    table.cell(dash, 0, 2, "Peak Equity",      text_size = size.small)
+    table.cell(dash, 1, 2, str.tostring(peakEquity, format.mintick), text_size = size.small)
+    table.cell(dash, 0, 3, "Drawdown %",       text_size = size.small)
+    table.cell(dash, 1, 3, str.tostring(currentDDPct, "#.##") + "%", text_color = tradingHalted ? color.red : color.green, text_size = size.small)
+    table.cell(dash, 0, 4, "Friction %",       text_size = size.small)
+    table.cell(dash, 1, 4, na(frictionPct) ? "n/a" : str.tostring(frictionPct, "#.###") + "%", text_size = size.small)
+    table.cell(dash, 0, 5, "Position (shares)",text_size = size.small)
+    table.cell(dash, 1, 5, str.tostring(strategy.position_size, "#"), text_size = size.small)
