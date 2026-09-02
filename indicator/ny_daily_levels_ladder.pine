@@ -34,21 +34,23 @@ searchDays  = input.int(120, "Days to search for next higher/lower level", minva
 tz = "America/New_York"
 
 // ---------- EXCHANGE / SYMBOL FILTER ----------
-f_exchangeAllowed() =>
-    ok = not onlyNyse
-    if onlyNyse
-        parts = str.split(str.upper(exchList), ",")
+f_exchangeAllowed(string exch, string allowedList, bool restrict) =>
+    ok = not restrict
+    if restrict
+        parts = str.split(str.upper(allowedList), ",")
         for i = 0 to array.size(parts) - 1
-            if str.trim(array.get(parts, i)) == str.upper(syminfo.exchange)
+            if str.trim(array.get(parts, i)) == str.upper(exch)
                 ok := true
     ok
 
-allowed = syminfo.type == "stock" and f_exchangeAllowed()
+symExchange = syminfo.exchange
+symType     = syminfo.type
+allowed     = symType == "stock" and f_exchangeAllowed(symExchange, exchList, onlyNyse)
 
 var table info = table.new(position.top_right, 1, 1)
 if barstate.islast and not allowed
     table.cell(info, 0, 0,
-         "NY Daily Levels Ladder is inactive:\nsymbol is not a stock on " + exchList + " (this is " + syminfo.exchange + " / " + syminfo.type + ")",
+         "NY Daily Levels Ladder is inactive:\nsymbol is not a stock on " + exchList + " (this is " + symExchange + " / " + symType + ")",
          text_color = color.white, bgcolor = color.new(#9C27B0, 20), text_size = size.small)
 
 // ---------- SESSION / DAY DETECTION (New York time) ----------
