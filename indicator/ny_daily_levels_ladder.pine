@@ -8,12 +8,15 @@
 //        - the nearest earlier day high that sits ABOVE that day's high
 //        - the nearest earlier day low  that sits BELOW that day's low
 //     It does not matter how far away that level is - only the nearest one counts.
+// Every line starts at the bar where its swing point was made (the bar of the
+// high or low), and extends to the right.
 // When a new day starts, the four old lines are deleted and four new ones are
 // drawn for the day that just finished, so the ladder moves forward day by day.
 
 indicator("NY Daily Levels Ladder",
      shorttitle      = "NY D-H/L Ladder",
      overlay         = true,
+     scale           = scale.right,
      max_lines_count = 8)
 
 // ---------- INPUTS ----------
@@ -52,11 +55,14 @@ startTrigger = counting and (newDay or not counting[1])
 var int   daysDone  = 0
 var float dH        = na      // running high of the active day
 var float dL        = na      // running low  of the active day
-var int   dStart    = na      // bar index of the first bar of the active day
+var int   dHbar     = na      // bar index where the day high was made
+var int   dLbar     = na      // bar index where the day low  was made
 var bool  dayActive = false
 
-var float[] hist_H  = array.new_float()   // completed day highs (newest last)
-var float[] hist_L  = array.new_float()   // completed day lows  (newest last)
+var float[] hist_H    = array.new_float()   // completed day highs (newest last)
+var float[] hist_L    = array.new_float()   // completed day lows  (newest last)
+var int[]   hist_Hbar = array.new_int()     // bar index of each stored high
+var int[]   hist_Lbar = array.new_int()     // bar index of each stored low
 
 // the only four lines on the chart
 var line lnH  = na
@@ -65,24 +71,24 @@ var line lnNH = na
 var line lnNL = na
 
 // ---------- HELPERS ----------
-// nearest stored level strictly ABOVE ref (na when none)
+// index of the nearest stored level strictly ABOVE ref (-1 when none)
 f_nextAbove(float[] arr, float ref) =>
-    float best = na
+    int best = -1
     if array.size(arr) > 0
         for i = 0 to array.size(arr) - 1
             v = array.get(arr, i)
-            if v > ref and (na(best) or v < best)
-                best := v
+            if v > ref and (best < 0 or v < array.get(arr, best))
+                best := i
     best
 
-// nearest stored level strictly BELOW ref (na when none)
+// index of the nearest stored level strictly BELOW ref (-1 when none)
 f_nextBelow(float[] arr, float ref) =>
-    float best = na
+    int best = -1
     if array.size(arr) > 0
         for i = 0 to array.size(arr) - 1
             v = array.get(arr, i)
-            if v < ref and (na(best) or v > best)
-                best := v
+            if v < ref and (best < 0 or v > array.get(arr, best))
+                best := i
     best
 
 f_newLine(int x1, float y, int w) =>
@@ -103,8 +109,8 @@ f_safeDelete(line ln) =>
 // ---------- MAIN ----------
 // the active day is finished: replace the four lines with this day's levels
 if dayActive and (startTrigger or not counting)
-    nh = f_nextAbove(hist_H, dH)
-    nl = f_nextBelow(hist_L, dL)
+    iH = f_nextAbove(hist_H, dH)
+    iL = f_nextBelow(hist_L, dL)
 
     // delete the old four lines
     f_safeDelete(lnH)
@@ -112,18 +118,23 @@ if dayActive and (startTrigger or not counting)
     f_safeDelete(lnNH)
     f_safeDelete(lnNL)
 
-    // draw the new four lines (thick ones only when an earlier level exists)
-    lnH  := f_newLine(dStart, dH, midWidth)
-    lnL  := f_newLine(dStart, dL, midWidth)
-    lnNH := na(nh) ? line(na) : f_newLine(dStart, nh, thickWidth)
-    lnNL := na(nl) ? line(na) : f_newLine(dStart, nl, thickWidth)
+    // medium lines start at the bar of the day's high / low
+    lnH := f_newLine(dHbar, dH, midWidth)
+    lnL := f_newLine(dLbar, dL, midWidth)
+    // thick lines start at the bar where the earlier swing high / low was made
+    lnNH := iH < 0 ? line(na) : f_newLine(array.get(hist_Hbar, iH), array.get(hist_H, iH), thickWidth)
+    lnNL := iL < 0 ? line(na) : f_newLine(array.get(hist_Lbar, iL), array.get(hist_L, iL), thickWidth)
 
-    // remember this day's high/low for the next-level search
+    // remember this day's high/low (and where they were made)
     array.push(hist_H, dH)
     array.push(hist_L, dL)
+    array.push(hist_Hbar, dHbar)
+    array.push(hist_Lbar, dLbar)
     while array.size(hist_H) > searchDays
         array.shift(hist_H)
         array.shift(hist_L)
+        array.shift(hist_Hbar)
+        array.shift(hist_Lbar)
 
     daysDone  += 1
     dayActive := false
@@ -133,12 +144,17 @@ if startTrigger
     dayActive := true
     dH        := high
     dL        := low
-    dStart    := bar_index
+    dHbar     := bar_index
+    dLbar     := bar_index
 
-// accumulate the active day
+// accumulate the active day, remembering where the high and low were made
 if dayActive and counting
-    dH := math.max(dH, high)
-    dL := math.min(dL, low)
+    if high > dH
+        dH    := high
+        dHbar := bar_index
+    if low < dL
+        dL    := low
+        dLbar := bar_index
 
 // keep the four lines anchored to their price and stretched to the latest bar
 f_extendTo(lnH,  bar_index)
