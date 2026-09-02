@@ -1,20 +1,20 @@
 //@version=5
 // NY Daily Levels Ladder
 // ----------------------
-// For NYSE-listed stocks (New York time, regular session 09:30-16:00):
-//   * Medium purple lines  -> each day's HIGH and LOW.
-//   * Thick  purple lines  -> the "next" level beyond that day's range:
-//        - the nearest PRIOR day high that sits ABOVE the day's high
-//        - the nearest PRIOR day low  that sits BELOW the day's low
+// For NYSE-listed stocks (New York time, regular session 09:30-16:00).
+// Exactly FOUR lines are on the chart at any time, all purple:
+//   * 2 medium lines -> the HIGH and LOW of the last completed day.
+//   * 2 thick  lines -> the "next" level beyond that day's range:
+//        - the nearest earlier day high that sits ABOVE that day's high
+//        - the nearest earlier day low  that sits BELOW that day's low
 //     It does not matter how far away that level is - only the nearest one counts.
-// The lines are drawn for every day and extended to the right, so the chart
-// keeps the levels of the previous day, the day before that, and so on.
-// The current (unfinished) day is drawn live and updated on every bar.
+// When a new day starts, the four old lines are deleted and four new ones are
+// drawn for the day that just finished, so the ladder moves forward day by day.
 
 indicator("NY Daily Levels Ladder",
      shorttitle      = "NY D-H/L Ladder",
      overlay         = true,
-     max_lines_count = 500)
+     max_lines_count = 8)
 
 // ---------- INPUTS ----------
 gScope = "Scope"
@@ -28,11 +28,8 @@ gDraw = "Drawing"
 lineColor   = input.color(#9C27B0, "Line color", group = gDraw)
 midWidth    = input.int(2, "Day high/low width (medium)",  minval = 1, maxval = 6, group = gDraw)
 thickWidth  = input.int(4, "Next higher/lower width (thick)", minval = 1, maxval = 10, group = gDraw)
-extendRight = input.bool(true, "Extend lines to the right", group = gDraw)
-showLive    = input.bool(true, "Draw the current day live", group = gDraw)
-daysKeep    = input.int(20, "Days to keep on chart", minval = 1, maxval = 120, group = gDraw)
 searchDays  = input.int(120, "Days to search for next higher/lower level", minval = 1, maxval = 500, group = gDraw,
-     tooltip = "How many previous days are scanned when looking for the nearest prior high above / low below the day's range.")
+     tooltip = "How many earlier days are scanned when looking for the nearest high above / low below the day's range.")
 
 tz = "America/New_York"
 
@@ -69,21 +66,16 @@ startTrigger = counting and (newDay or not counting[1])
 var float dH        = na      // running high of the active day
 var float dL        = na      // running low  of the active day
 var int   dStart    = na      // time of the first bar of the active day
-var int   dEnd      = na      // time of the last counted bar of the active day
 var bool  dayActive = false
 
 var float[] hist_H  = array.new_float()   // completed day highs (newest last)
 var float[] hist_L  = array.new_float()   // completed day lows  (newest last)
 
-var line[] lnH  = array.new_line()
-var line[] lnL  = array.new_line()
-var line[] lnNH = array.new_line()
-var line[] lnNL = array.new_line()
-
-var line liveH  = na
-var line liveL  = na
-var line liveNH = na
-var line liveNL = na
+// the only four lines on the chart
+var line lnH  = na
+var line lnL  = na
+var line lnNH = na
+var line lnNL = na
 
 // ---------- HELPERS ----------
 // nearest stored level strictly ABOVE ref (na when none)
@@ -106,10 +98,10 @@ f_nextBelow(float[] arr, float ref) =>
                 best := v
     best
 
-f_newLine(int x1, int x2, float y, int w) =>
-    line.new(x1, y, x2, y,
+f_newLine(int x1, float y, int w) =>
+    line.new(x1, y, x1 + 1, y,
          xloc   = xloc.bar_time,
-         extend = extendRight ? extend.right : extend.none,
+         extend = extend.right,
          color  = lineColor,
          width  = w)
 
@@ -117,42 +109,31 @@ f_safeDelete(line ln) =>
     if not na(ln)
         line.delete(ln)
 
-f_trimLines(line[] arr) =>
-    while array.size(arr) > daysKeep
-        f_safeDelete(array.shift(arr))
-
 // ---------- MAIN ----------
-// close the previous day when a new one starts, or when we leave the session
+// the active day is finished: replace the four lines with this day's levels
 if dayActive and (startTrigger or not counting)
-    nhF = f_nextAbove(hist_H, dH)
-    nlF = f_nextBelow(hist_L, dL)
+    nh = f_nextAbove(hist_H, dH)
+    nl = f_nextBelow(hist_L, dL)
 
-    // permanent lines for the completed day
-    array.push(lnH, f_newLine(dStart, dEnd, dH, midWidth))
-    array.push(lnL, f_newLine(dStart, dEnd, dL, midWidth))
-    array.push(lnNH, na(nhF) ? line(na) : f_newLine(dStart, dEnd, nhF, thickWidth))
-    array.push(lnNL, na(nlF) ? line(na) : f_newLine(dStart, dEnd, nlF, thickWidth))
-    f_trimLines(lnH)
-    f_trimLines(lnL)
-    f_trimLines(lnNH)
-    f_trimLines(lnNL)
+    // delete the old four lines
+    f_safeDelete(lnH)
+    f_safeDelete(lnL)
+    f_safeDelete(lnNH)
+    f_safeDelete(lnNL)
 
-    // remember the day's high/low for the next-level search
+    // draw the new four lines (thick ones only when an earlier level exists)
+    lnH  := f_newLine(dStart, dH, midWidth)
+    lnL  := f_newLine(dStart, dL, midWidth)
+    lnNH := na(nh) ? line(na) : f_newLine(dStart, nh, thickWidth)
+    lnNL := na(nl) ? line(na) : f_newLine(dStart, nl, thickWidth)
+
+    // remember this day's high/low for the next-level search
     array.push(hist_H, dH)
     array.push(hist_L, dL)
     while array.size(hist_H) > searchDays
         array.shift(hist_H)
         array.shift(hist_L)
 
-    // the live lines are replaced by the permanent ones
-    f_safeDelete(liveH)
-    f_safeDelete(liveL)
-    f_safeDelete(liveNH)
-    f_safeDelete(liveNL)
-    liveH  := na
-    liveL  := na
-    liveNH := na
-    liveNL := na
     dayActive := false
 
 // open a new day
@@ -161,41 +142,8 @@ if startTrigger
     dH        := high
     dL        := low
     dStart    := time
-    dEnd      := time
 
 // accumulate the active day
 if dayActive and counting
-    dH   := math.max(dH, high)
-    dL   := math.min(dL, low)
-    dEnd := time
-
-    if showLive
-        nh = f_nextAbove(hist_H, dH)
-        nl = f_nextBelow(hist_L, dL)
-
-        if na(liveH)
-            liveH := f_newLine(dStart, dEnd, dH, midWidth)
-            liveL := f_newLine(dStart, dEnd, dL, midWidth)
-        else
-            line.set_xy1(liveH, dStart, dH)
-            line.set_xy2(liveH, dEnd, dH)
-            line.set_xy1(liveL, dStart, dL)
-            line.set_xy2(liveL, dEnd, dL)
-
-        if na(nh)
-            f_safeDelete(liveNH)
-            liveNH := na
-        else if na(liveNH)
-            liveNH := f_newLine(dStart, dEnd, nh, thickWidth)
-        else
-            line.set_xy1(liveNH, dStart, nh)
-            line.set_xy2(liveNH, dEnd, nh)
-
-        if na(nl)
-            f_safeDelete(liveNL)
-            liveNL := na
-        else if na(liveNL)
-            liveNL := f_newLine(dStart, dEnd, nl, thickWidth)
-        else
-            line.set_xy1(liveNL, dStart, nl)
-            line.set_xy2(liveNL, dEnd, nl)
+    dH := math.max(dH, high)
+    dL := math.min(dL, low)
