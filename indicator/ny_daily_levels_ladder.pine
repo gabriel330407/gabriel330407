@@ -43,7 +43,7 @@ f_exchangeAllowed(string exch, string allowedList, bool restrict) =>
                 ok := true
     ok
 
-symExchange = syminfo.exchange
+symExchange = syminfo.prefix
 symType     = syminfo.type
 allowed     = symType == "stock" and f_exchangeAllowed(symExchange, exchList, onlyNyse)
 
