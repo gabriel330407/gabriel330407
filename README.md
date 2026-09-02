@@ -162,14 +162,13 @@ All development on `claude/wave-trading-bot-1nXME`.
 ## 📏 NY Daily Levels Ladder (`indicator/ny_daily_levels_ladder.pine`)
 
 Overlay indicator for the **15-minute chart** of any stock traded in the New York session (09:30–16:00 New York time).
-
-Rule, applied every day:
+Exactly **four purple lines** at any time; out-of-date lines are deleted.
 
 | Line | Meaning |
 |------|---------|
-| 2 × medium purple | The **high** and **low** of the previous day |
-| 2 × thick purple  | Looking back 2 days before that (configurable): the nearest day-high above the previous day's high and the nearest day-low below its low |
+| 2 × medium | The **high** and **low** of the previous day |
+| 2 × thick  | Looking back at earlier days: the nearest day-high above the previous day's high and the nearest day-low below its low |
 
-- Levels are recalculated when a new day starts, so the current day always shows four lines.
-- Drawn with plots, so they are locked to the price scale.
-- Optional status box shows the four current values.
+- Each line starts at the bar where that high/low was made and extends to the right.
+- When a new day starts the four old lines are deleted and four new ones are drawn.
+- The indicator is pinned to the right price scale. If the lines ever appear detached from price, right-click the indicator → *Pin to scale* → *Pinned to right scale*.

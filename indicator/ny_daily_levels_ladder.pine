@@ -1,24 +1,27 @@
 //@version=5
 // NY Daily Levels Ladder  (15-minute chart, New York session 09:30-16:00)
 // -----------------------------------------------------------------------
-// Rule, applied every day:
-//   1. Take the HIGH and LOW of the PREVIOUS day  -> purple MEDIUM lines.
-//   2. Look back N days before that (default 2) and find the nearest
-//      day-high ABOVE that high and the nearest day-low BELOW that low
-//      (distance does not matter, only the nearest)  -> purple THICK lines.
-// Each day shows its own four levels; when a new day starts the levels are
-// recalculated, so you always see four lines for the current day.
+// Exactly FOUR purple lines on the chart at any time:
+//   * 2 MEDIUM lines -> the HIGH and LOW of the previous day.
+//   * 2 THICK  lines -> looking back at the earlier days, the nearest
+//                       day-high ABOVE that high and the nearest day-low
+//                       BELOW that low (distance does not matter).
+// Every line starts at the bar where that high / low was made and extends
+// to the right. When a new day starts, the four old lines are deleted and
+// four new ones are drawn. Nothing that is out of date stays on the chart.
 
 indicator("NY Daily Levels Ladder",
-     shorttitle = "NY D-H/L Ladder",
-     overlay    = true)
+     shorttitle      = "NY D-H/L Ladder",
+     overlay         = true,
+     scale           = scale.right,      // draw on the same price scale as the candles
+     max_lines_count = 8)
 
 // ---------- INPUTS ----------
 gRule = "Rule"
 sess      = input.session("0930-1600", "New York regular session", group = gRule)
 rthOnly   = input.bool(true, "Use regular session only for the day high/low", group = gRule)
-lookback  = input.int(2, "Look back (days before the previous day)", minval = 1, maxval = 100, group = gRule,
-     tooltip = "How many earlier days are scanned for the nearest higher high / lower low.")
+lookback  = input.int(60, "Look back (days before the previous day)", minval = 1, maxval = 250, group = gRule,
+     tooltip = "How many earlier days are scanned for the nearest higher high / lower low. Set 2 to look at only the two days before.")
 tfOnly    = input.string("15", "Run only on this chart timeframe (empty = any)", group = gRule)
 
 gDraw = "Drawing"
@@ -33,7 +36,7 @@ tz = "America/New_York"
 // ---------- SESSION / DAY DETECTION (New York time) ----------
 tfOk     = tfOnly == "" or timeframe.period == tfOnly
 inSess   = not na(time(timeframe.period, sess, tz))
-counting = timeframe.isintraday and rthOnly ? inSess : true
+counting = tfOk and (timeframe.isintraday and rthOnly ? inSess : true)
 
 dayKey = year(time, tz) * 10000 + month(time, tz) * 100 + dayofmonth(time, tz)
 newDay = dayKey != nz(dayKey[1], -1)
@@ -45,68 +48,108 @@ startTrigger = counting and (newDay or not counting[1])
 var int   daysDone  = 0
 var float dH        = na       // running high of the day being built
 var float dL        = na       // running low  of the day being built
+var int   dHbar     = na       // bar where that high was made
+var int   dLbar     = na       // bar where that low  was made
 var bool  dayActive = false
 
-var float[] hist_H = array.new_float()   // completed day highs (newest last)
-var float[] hist_L = array.new_float()   // completed day lows  (newest last)
+var float[] hist_H    = array.new_float()   // completed day highs (newest last)
+var float[] hist_L    = array.new_float()   // completed day lows  (newest last)
+var int[]   hist_Hbar = array.new_int()     // bar of each stored high
+var int[]   hist_Lbar = array.new_int()     // bar of each stored low
 
-// the four levels currently shown
-var float lvlH  = na    // previous day high   (medium)
-var float lvlL  = na    // previous day low    (medium)
-var float lvlNH = na    // nearest higher high (thick)
-var float lvlNL = na    // nearest lower low   (thick)
+// the only four lines on the chart
+var line lnH  = na
+var line lnL  = na
+var line lnNH = na
+var line lnNL = na
 
-finalized = false
+// ---------- HELPERS ----------
+f_newLine(int x1, float y, int w) =>
+    line.new(x1, y, bar_index, y,
+         xloc   = xloc.bar_index,
+         extend = extend.right,
+         color  = lineColor,
+         width  = w)
+
+f_safeDelete(line ln) =>
+    if not na(ln)
+        line.delete(ln)
+
+f_extendTo(line ln, int x2) =>
+    if not na(ln)
+        line.set_x2(ln, x2)
 
 // ---------- MAIN ----------
 // the day being built is finished: it becomes the "previous day"
 if dayActive and (startTrigger or not counting)
-    float nh = na
-    float nl = na
+    // look back for the nearest higher high / lower low
+    int   iH  = -1
+    int   iL  = -1
+    float nh  = na
+    float nl  = na
     n = array.size(hist_H)
     if n > 0
         for i = n - 1 to math.max(0, n - lookback)
             v = array.get(hist_H, i)
             w = array.get(hist_L, i)
-            if v > dH and (na(nh) or v < nh)
-                nh := v
-            if w < dL and (na(nl) or w > nl)
-                nl := w
+            if v > dH
+                if na(nh) or v < nh
+                    nh := v
+                    iH := i
+            if w < dL
+                if na(nl) or w > nl
+                    nl := w
+                    iL := i
 
-    lvlH  := dH
-    lvlL  := dL
-    lvlNH := nh
-    lvlNL := nl
+    // delete the old four lines
+    f_safeDelete(lnH)
+    f_safeDelete(lnL)
+    f_safeDelete(lnNH)
+    f_safeDelete(lnNL)
 
+    // medium lines: previous day high / low, from the bar where they were made
+    lnH := f_newLine(dHbar, dH, midWidth)
+    lnL := f_newLine(dLbar, dL, midWidth)
+    // thick lines: nearest higher high / lower low, from the bar where they were made
+    lnNH := iH < 0 ? line(na) : f_newLine(array.get(hist_Hbar, iH), nh, thickWidth)
+    lnNL := iL < 0 ? line(na) : f_newLine(array.get(hist_Lbar, iL), nl, thickWidth)
+
+    // store this day
     array.push(hist_H, dH)
     array.push(hist_L, dL)
-    while array.size(hist_H) > 200
+    array.push(hist_Hbar, dHbar)
+    array.push(hist_Lbar, dLbar)
+    while array.size(hist_H) > lookback
         array.shift(hist_H)
         array.shift(hist_L)
+        array.shift(hist_Hbar)
+        array.shift(hist_Lbar)
 
     daysDone  += 1
     dayActive := false
-    finalized := true
 
 // start building a new day
 if startTrigger
     dayActive := true
     dH        := high
     dL        := low
+    dHbar     := bar_index
+    dLbar     := bar_index
 
-// accumulate the day being built
+// accumulate the day being built, remembering where the high / low were made
 if dayActive and counting
-    dH := math.max(dH, high)
-    dL := math.min(dL, low)
+    if high > dH
+        dH    := high
+        dHbar := bar_index
+    if low < dL
+        dL    := low
+        dLbar := bar_index
 
-// ---------- DRAWING ----------
-// break the line where the level changes, so days are not joined by a vertical step
-show = tfOk and not startTrigger and not finalized
-
-plot(show ? lvlH  : na, "Previous day high", color = lineColor, linewidth = midWidth,   style = plot.style_linebr)
-plot(show ? lvlL  : na, "Previous day low",  color = lineColor, linewidth = midWidth,   style = plot.style_linebr)
-plot(show ? lvlNH : na, "Next higher high",  color = lineColor, linewidth = thickWidth, style = plot.style_linebr)
-plot(show ? lvlNL : na, "Next lower low",    color = lineColor, linewidth = thickWidth, style = plot.style_linebr)
+// keep the four lines stretched to the newest bar
+f_extendTo(lnH,  bar_index)
+f_extendTo(lnL,  bar_index)
+f_extendTo(lnNH, bar_index)
+f_extendTo(lnNL, bar_index)
 
 // ---------- STATUS BOX ----------
 var table info = table.new(position.top_right, 1, 1)
@@ -114,10 +157,10 @@ if barstate.islast and showStatus
     txt = not tfOk ? "NY Daily Levels Ladder\nHidden: chart is " + timeframe.period + ", set to run on " + tfOnly :
          "NY Daily Levels Ladder\n" +
          "Completed days: " + str.tostring(daysDone) + "\n" +
-         "Prev day high: "  + (na(lvlH)  ? "-" : str.tostring(lvlH,  format.mintick)) + "\n" +
-         "Prev day low: "   + (na(lvlL)  ? "-" : str.tostring(lvlL,  format.mintick)) + "\n" +
-         "Next higher: "    + (na(lvlNH) ? "-" : str.tostring(lvlNH, format.mintick)) + "\n" +
-         "Next lower: "     + (na(lvlNL) ? "-" : str.tostring(lvlNL, format.mintick))
+         "Prev day high: " + (na(lnH)  ? "-" : str.tostring(line.get_y1(lnH),  format.mintick)) + "\n" +
+         "Prev day low: "  + (na(lnL)  ? "-" : str.tostring(line.get_y1(lnL),  format.mintick)) + "\n" +
+         "Next higher: "   + (na(lnNH) ? "-" : str.tostring(line.get_y1(lnNH), format.mintick)) + "\n" +
+         "Next lower: "    + (na(lnNL) ? "-" : str.tostring(line.get_y1(lnNL), format.mintick))
     tsize = statusSize == "small" ? size.small : statusSize == "normal" ? size.normal : statusSize == "huge" ? size.huge : size.large
     table.cell(info, 0, 0, txt, text_color = color.white, bgcolor = color.new(#9C27B0, 30),
          text_size = tsize, text_halign = text.align_left)
