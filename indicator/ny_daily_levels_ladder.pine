@@ -1,7 +1,7 @@
 //@version=5
 // NY Daily Levels Ladder
 // ----------------------
-// For NYSE-listed stocks (New York time, regular session 09:30-16:00).
+// For any stock traded during the New York session (09:30-16:00 New York time).
 // Exactly FOUR lines are on the chart at any time, all purple:
 //   * 2 medium lines -> the HIGH and LOW of the last completed day.
 //   * 2 thick  lines -> the "next" level beyond that day's range:
@@ -18,9 +18,6 @@ indicator("NY Daily Levels Ladder",
 
 // ---------- INPUTS ----------
 gScope = "Scope"
-onlyNyse   = input.bool(true, "Only stocks listed on the allowed exchanges", group = gScope)
-exchList   = input.string("NYSE", "Allowed exchanges (comma separated)", group = gScope,
-     tooltip = "Default: NYSE only. Add e.g. NYSE,NASDAQ,AMEX,ARCA to allow more US exchanges.")
 sess       = input.session("0930-1600", "Regular session (New York time)", group = gScope)
 rthOnly    = input.bool(true, "Regular session only (ignore pre/post market)", group = gScope)
 
@@ -28,31 +25,20 @@ gDraw = "Drawing"
 lineColor   = input.color(#9C27B0, "Line color", group = gDraw)
 midWidth    = input.int(2, "Day high/low width (medium)",  minval = 1, maxval = 6, group = gDraw)
 thickWidth  = input.int(4, "Next higher/lower width (thick)", minval = 1, maxval = 10, group = gDraw)
-showStatus  = input.bool(true, "Show status box (for troubleshooting)", group = gDraw)
+showStatus  = input.bool(false, "Show status box (for troubleshooting)", group = gDraw)
 searchDays  = input.int(120, "Days to search for next higher/lower level", minval = 1, maxval = 500, group = gDraw,
      tooltip = "How many earlier days are scanned when looking for the nearest high above / low below the day's range.")
 
 tz = "America/New_York"
 
-// ---------- EXCHANGE / SYMBOL FILTER ----------
-f_exchangeAllowed(string exch, string allowedList, bool restrict) =>
-    ok = not restrict
-    if restrict
-        parts = str.split(str.upper(allowedList), ",")
-        for i = 0 to array.size(parts) - 1
-            if str.trim(array.get(parts, i)) == str.upper(exch)
-                ok := true
-    ok
-
 symExchange = syminfo.prefix
 symType     = syminfo.type
-allowed     = symType == "stock" and f_exchangeAllowed(symExchange, exchList, onlyNyse)
 
 var table info = table.new(position.top_right, 1, 1)
 
 // ---------- SESSION / DAY DETECTION (New York time) ----------
 inSess   = not na(time(timeframe.period, sess, tz))
-counting = allowed and (timeframe.isintraday and rthOnly ? inSess : true)
+counting = timeframe.isintraday and rthOnly ? inSess : true
 
 dayKey = year(time, tz) * 10000 + month(time, tz) * 100 + dayofmonth(time, tz)
 newDay = dayKey != nz(dayKey[1], -1)
@@ -150,18 +136,13 @@ if dayActive and counting
     dL := math.min(dL, low)
 
 // ---------- STATUS BOX ----------
-if barstate.islast
-    if not allowed
-        table.cell(info, 0, 0,
-             "NY Daily Levels Ladder is inactive:\nsymbol is not a stock on " + exchList + "\n(this symbol is " + symExchange + " / " + symType + ")",
-             text_color = color.white, bgcolor = color.new(#9C27B0, 20), text_size = size.small)
-    else if showStatus
-        txt = "NY Daily Levels Ladder\n" +
-             "Exchange: " + symExchange + "  Type: " + symType + "\n" +
-             "Completed days: " + str.tostring(daysDone) + "\n" +
-             "Day high: "  + (na(lnH)  ? "-" : str.tostring(line.get_y1(lnH),  format.mintick)) + "\n" +
-             "Day low: "   + (na(lnL)  ? "-" : str.tostring(line.get_y1(lnL),  format.mintick)) + "\n" +
-             "Next high: " + (na(lnNH) ? "-" : str.tostring(line.get_y1(lnNH), format.mintick)) + "\n" +
-             "Next low: "  + (na(lnNL) ? "-" : str.tostring(line.get_y1(lnNL), format.mintick))
-        table.cell(info, 0, 0, txt, text_color = color.white, bgcolor = color.new(#9C27B0, 30),
-             text_size = size.small, text_halign = text.align_left)
+if barstate.islast and showStatus
+    txt = "NY Daily Levels Ladder\n" +
+         "Exchange: " + symExchange + "  Type: " + symType + "\n" +
+         "Completed days: " + str.tostring(daysDone) + "\n" +
+         "Day high: "  + (na(lnH)  ? "-" : str.tostring(line.get_y1(lnH),  format.mintick)) + "\n" +
+         "Day low: "   + (na(lnL)  ? "-" : str.tostring(line.get_y1(lnL),  format.mintick)) + "\n" +
+         "Next high: " + (na(lnNH) ? "-" : str.tostring(line.get_y1(lnNH), format.mintick)) + "\n" +
+         "Next low: "  + (na(lnNL) ? "-" : str.tostring(line.get_y1(lnNL), format.mintick))
+    table.cell(info, 0, 0, txt, text_color = color.white, bgcolor = color.new(#9C27B0, 30),
+         text_size = size.small, text_halign = text.align_left)
