@@ -25,7 +25,8 @@ gDraw = "Drawing"
 lineColor   = input.color(#9C27B0, "Line color", group = gDraw)
 midWidth    = input.int(2, "Day high/low width (medium)",  minval = 1, maxval = 6, group = gDraw)
 thickWidth  = input.int(4, "Next higher/lower width (thick)", minval = 1, maxval = 10, group = gDraw)
-showStatus  = input.bool(false, "Show status box (for troubleshooting)", group = gDraw)
+showStatus  = input.bool(true, "Show status box", group = gDraw)
+statusSize  = input.string("large", "Status box text size", options = ["small", "normal", "large", "huge"], group = gDraw)
 searchDays  = input.int(120, "Days to search for next higher/lower level", minval = 1, maxval = 500, group = gDraw,
      tooltip = "How many earlier days are scanned when looking for the nearest high above / low below the day's range.")
 
@@ -51,7 +52,7 @@ startTrigger = counting and (newDay or not counting[1])
 var int   daysDone  = 0
 var float dH        = na      // running high of the active day
 var float dL        = na      // running low  of the active day
-var int   dStart    = na      // time of the first bar of the active day
+var int   dStart    = na      // bar index of the first bar of the active day
 var bool  dayActive = false
 
 var float[] hist_H  = array.new_float()   // completed day highs (newest last)
@@ -85,11 +86,15 @@ f_nextBelow(float[] arr, float ref) =>
     best
 
 f_newLine(int x1, float y, int w) =>
-    line.new(x1, y, time, y,
-         xloc   = xloc.bar_time,
+    line.new(x1, y, bar_index, y,
+         xloc   = xloc.bar_index,
          extend = extend.right,
          color  = lineColor,
          width  = w)
+
+f_extendTo(line ln, int x2) =>
+    if not na(ln)
+        line.set_x2(ln, x2)
 
 f_safeDelete(line ln) =>
     if not na(ln)
@@ -128,12 +133,18 @@ if startTrigger
     dayActive := true
     dH        := high
     dL        := low
-    dStart    := time
+    dStart    := bar_index
 
 // accumulate the active day
 if dayActive and counting
     dH := math.max(dH, high)
     dL := math.min(dL, low)
+
+// keep the four lines anchored to their price and stretched to the latest bar
+f_extendTo(lnH,  bar_index)
+f_extendTo(lnL,  bar_index)
+f_extendTo(lnNH, bar_index)
+f_extendTo(lnNL, bar_index)
 
 // ---------- STATUS BOX ----------
 if barstate.islast and showStatus
@@ -144,5 +155,6 @@ if barstate.islast and showStatus
          "Day low: "   + (na(lnL)  ? "-" : str.tostring(line.get_y1(lnL),  format.mintick)) + "\n" +
          "Next high: " + (na(lnNH) ? "-" : str.tostring(line.get_y1(lnNH), format.mintick)) + "\n" +
          "Next low: "  + (na(lnNL) ? "-" : str.tostring(line.get_y1(lnNL), format.mintick))
+    tsize = statusSize == "small" ? size.small : statusSize == "normal" ? size.normal : statusSize == "huge" ? size.huge : size.large
     table.cell(info, 0, 0, txt, text_color = color.white, bgcolor = color.new(#9C27B0, 30),
-         text_size = size.small, text_halign = text.align_left)
+         text_size = tsize, text_halign = text.align_left)
