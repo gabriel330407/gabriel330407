@@ -9,12 +9,21 @@
 // Every line starts at the bar where that high / low was made and extends
 // to the right. When a new day starts, the four old lines are deleted and
 // four new ones are drawn. Nothing that is out of date stays on the chart.
+//
+// OPENING CANDLE SETUP (labels + alerts):
+//   Candle 1 (first 15m candle of the day): big body, wicks <= X% of range,
+//             body >= K x the average body of the previous candles.
+//   Candle 2: a decent pullback, retracing between MIN% and MAX% of candle 1's body.
+//   Candle 3: as soon as price passes candle 2's close (or high/low)
+//             -> BUY / SELL label, stop-loss label + line just beyond candle 1's
+//                extreme, and a live "% to stop" label that follows the price.
 
 indicator("NY Daily Levels Ladder",
      shorttitle      = "NY D-H/L Ladder",
      overlay         = true,
-     scale           = scale.right,      // draw on the same price scale as the candles
-     max_lines_count = 8)
+     scale            = scale.right,      // draw on the same price scale as the candles
+     max_lines_count  = 500,
+     max_labels_count = 500)
 
 // ---------- INPUTS ----------
 gRule = "Rule"
@@ -30,6 +39,18 @@ midWidth   = input.int(2, "Previous day high/low width (medium)", minval = 1, ma
 thickWidth = input.int(4, "Next higher/lower width (thick)", minval = 1, maxval = 10, group = gDraw)
 showStatus = input.bool(true, "Show status box", group = gDraw)
 statusSize = input.string("large", "Status box text size", options = ["small", "normal", "large", "huge"], group = gDraw)
+
+gSet = "Opening candle setup"
+setupOn    = input.bool(true, "Enable opening candle setup", group = gSet)
+maxWickPct = input.float(20, "Candle 1: max wicks (% of candle range)", minval = 0, maxval = 100, step = 1, group = gSet)
+bodyMult   = input.float(2.0, "Candle 1: body must be >= X times the average body", minval = 0.5, maxval = 10, step = 0.1, group = gSet)
+bodyAvgLen = input.int(20, "Candle 1: average body over previous N candles", minval = 3, maxval = 200, group = gSet)
+minRetr    = input.float(20, "Candle 2: min pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1, group = gSet)
+maxRetr    = input.float(60, "Candle 2: max pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1, group = gSet)
+trigSrc    = input.string("Candle 2 close", "Candle 3 trigger level", options = ["Candle 2 close", "Candle 2 high/low"], group = gSet)
+waitMin    = input.bool(false, "Wait 1 minute into candle 3 before signalling (real-time only)", group = gSet)
+slBuf      = input.float(0.10, "Stop-loss: % beyond candle 1 extreme", minval = 0, maxval = 5, step = 0.05, group = gSet)
+showChecks = input.bool(true, "Mark candle 1 / candle 2 when they pass", group = gSet)
 
 tz = "America/New_York"
 
@@ -150,6 +171,115 @@ f_extendTo(lnH,  bar_index)
 f_extendTo(lnL,  bar_index)
 f_extendTo(lnNH, bar_index)
 f_extendTo(lnNL, bar_index)
+
+// ---------- OPENING CANDLE SETUP ----------
+// position of the bar inside the trading day (1 = first 15m candle)
+var int barInDay = 0
+if startTrigger
+    barInDay := 1
+else if counting
+    barInDay += 1
+else
+    barInDay := 0
+
+avgBody = ta.sma(math.abs(close - open), bodyAvgLen)
+
+// candle 1 facts (stored on candle 2, when candle 1 is closed)
+var bool  c1Ok   = false
+var bool  c1Bull = false
+var float c1O    = na
+var float c1H    = na
+var float c1L    = na
+var float c1C    = na
+var float c1Body = na
+// candle 2 facts (stored on candle 3, when candle 2 is closed)
+var bool  c2Ok   = false
+var float trig   = na
+var bool  fired  = false
+
+// per-day drawings
+var line  slLine  = na
+var label liveLbl = na
+var float slLevel = na
+var bool  isLong  = false
+
+if startTrigger
+    c1Ok  := false
+    c2Ok  := false
+    fired := false
+    trig  := na
+
+// --- candle 1 check (evaluated on the second candle of the day) ---
+if setupOn and barInDay == 2
+    body1 = math.abs(close[1] - open[1])
+    rng1  = high[1] - low[1]
+    wick1 = rng1 > 0 ? (rng1 - body1) / rng1 * 100 : 100
+    c1Ok   := rng1 > 0 and wick1 <= maxWickPct and body1 >= bodyMult * nz(avgBody[2])
+    c1Bull := close[1] > open[1]
+    c1O    := open[1]
+    c1H    := high[1]
+    c1L    := low[1]
+    c1C    := close[1]
+    c1Body := body1
+    if c1Ok and showChecks
+        label.new(bar_index - 1, c1Bull ? low[1] : high[1], "1",
+             style = c1Bull ? label.style_label_up : label.style_label_down,
+             color = color.new(#9C27B0, 0), textcolor = color.white, size = size.tiny)
+
+// --- candle 2 check (evaluated on the third candle of the day) ---
+if setupOn and barInDay == 3 and c1Ok
+    depth = c1Bull ? (c1C - low[1]) / c1Body * 100 : (high[1] - c1C) / c1Body * 100
+    c2Ok := depth >= minRetr and depth <= maxRetr
+    trig := trigSrc == "Candle 2 close" ? close[1] : (c1Bull ? high[1] : low[1])
+    if c2Ok and showChecks
+        label.new(bar_index - 1, c1Bull ? low[1] : high[1], "2",
+             style = c1Bull ? label.style_label_up : label.style_label_down,
+             color = color.new(#9C27B0, 0), textcolor = color.white, size = size.tiny)
+
+// --- candle 3 trigger ---
+timeOk   = not waitMin or (timenow - time >= 60000)
+crossUp  = c1Bull and high >= trig
+crossDn  = not c1Bull and low <= trig
+longSig  = setupOn and barInDay == 3 and c2Ok and not fired and timeOk and crossUp
+shortSig = setupOn and barInDay == 3 and c2Ok and not fired and timeOk and crossDn
+
+if longSig or shortSig
+    fired   := true
+    isLong  := longSig
+    slLevel := isLong ? c1L * (1 - slBuf / 100) : c1H * (1 + slBuf / 100)
+    entryTxt = (isLong ? "BUY " : "SELL ") + str.tostring(trig, format.mintick)
+    label.new(bar_index, isLong ? low : high, entryTxt,
+         style = isLong ? label.style_label_up : label.style_label_down,
+         color = isLong ? color.new(#00C853, 0) : color.new(#D50000, 0),
+         textcolor = color.white, size = size.normal)
+    label.new(bar_index, slLevel, "SL " + str.tostring(slLevel, format.mintick),
+         style = label.style_label_left,
+         color = color.new(#D50000, 0), textcolor = color.white, size = size.small)
+    slLine := line.new(bar_index, slLevel, bar_index + 1, slLevel,
+         xloc = xloc.bar_index, color = color.new(#D50000, 0), width = 1, style = line.style_dashed)
+    alert((isLong ? "LONG" : "SHORT") + " opening setup on " + syminfo.ticker +
+         " entry " + str.tostring(trig, format.mintick) + " stop " + str.tostring(slLevel, format.mintick),
+         alert.freq_once_per_bar)
+
+// --- live "% to stop" label, follows the price until the day ends ---
+active = fired and counting and not na(slLevel)
+if active
+    pct = isLong ? (close - slLevel) / close * 100 : (slLevel - close) / close * 100
+    txt = "To stop: " + str.tostring(pct, "#.##") + "%"
+    if na(liveLbl)
+        liveLbl := label.new(bar_index + 2, slLevel, txt, style = label.style_label_left,
+             color = color.new(#D50000, 20), textcolor = color.white, size = size.normal)
+    else
+        label.set_xy(liveLbl, bar_index + 2, slLevel)
+        label.set_text(liveLbl, txt)
+    if not na(slLine)
+        line.set_x2(slLine, bar_index)
+else if not na(liveLbl)
+    label.delete(liveLbl)
+    liveLbl := na
+
+alertcondition(longSig,  "Opening setup LONG",  "Opening setup LONG on {{ticker}}")
+alertcondition(shortSig, "Opening setup SHORT", "Opening setup SHORT on {{ticker}}")
 
 // ---------- STATUS BOX ----------
 var table info = table.new(position.top_right, 1, 1)

@@ -172,3 +172,15 @@ Exactly **four purple lines** at any time; out-of-date lines are deleted.
 - Each line starts at the bar where that high/low was made and extends to the right.
 - When a new day starts the four old lines are deleted and four new ones are drawn.
 - The indicator is pinned to the right price scale. If the lines ever appear detached from price, right-click the indicator → *Pin to scale* → *Pinned to right scale*.
+
+### Opening candle setup (labels + alerts)
+
+| Step | Condition (all configurable) |
+|------|------------------------------|
+| Candle 1 (first 15m candle of the day) | Wicks ≤ 20 % of the range, body ≥ 2 × the average body of the previous 20 candles |
+| Candle 2 | Pulls back 20–60 % of candle 1's body |
+| Candle 3 | Price passes candle 2's close (or high/low) → **BUY / SELL** label, optional 1-minute wait in real time |
+
+- Stop-loss label + dashed line just beyond candle 1's extreme (buffer % configurable).
+- A live "To stop: x.xx %" label follows the price until the session ends.
+- Alerts: *Opening setup LONG* / *Opening setup SHORT* (alertcondition) plus a dynamic `alert()` message with entry and stop.
