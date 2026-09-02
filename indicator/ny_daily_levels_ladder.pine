@@ -73,22 +73,28 @@ var line lnNL = na
 // ---------- HELPERS ----------
 // index of the nearest stored level strictly ABOVE ref (-1 when none)
 f_nextAbove(float[] arr, float ref) =>
-    int best = -1
+    int   best    = -1
+    float bestVal = na
     if array.size(arr) > 0
         for i = 0 to array.size(arr) - 1
             v = array.get(arr, i)
-            if v > ref and (best < 0 or v < array.get(arr, best))
-                best := i
+            if v > ref
+                if na(bestVal) or v < bestVal
+                    best    := i
+                    bestVal := v
     best
 
 // index of the nearest stored level strictly BELOW ref (-1 when none)
 f_nextBelow(float[] arr, float ref) =>
-    int best = -1
+    int   best    = -1
+    float bestVal = na
     if array.size(arr) > 0
         for i = 0 to array.size(arr) - 1
             v = array.get(arr, i)
-            if v < ref and (best < 0 or v > array.get(arr, best))
-                best := i
+            if v < ref
+                if na(bestVal) or v > bestVal
+                    best    := i
+                    bestVal := v
     best
 
 f_newLine(int x1, float y, int w) =>
