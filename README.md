@@ -184,3 +184,7 @@ Exactly **four purple lines** at any time; out-of-date lines are deleted.
 - Stop-loss label + dashed line just beyond candle 1's extreme (buffer % configurable).
 - A live "To stop: x.xx %" label follows the price until the session ends.
 - Alerts: *Opening setup LONG* / *Opening setup SHORT* (alertcondition) plus a dynamic `alert()` message with entry and stop.
+
+### Pine Screener version (`scanner/ny_opening_setup_screener.pine`)
+
+Same rules, no drawings. Exposes `Candle 1 strong`, `Candle 2 pullback`, `Signal`, `Direction`, `Entry`, `Stop`, `% to stop`, `Bar in day` as plots so the TradingView Pine Screener can filter an S&P 500 watchlist on the 15-minute timeframe.

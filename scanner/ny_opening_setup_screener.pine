@@ -1,0 +1,111 @@
+//@version=5
+// NY Opening Setup - Pine Screener version
+// -----------------------------------------
+// Same rules as the "Opening candle setup" in indicator/ny_daily_levels_ladder.pine,
+// but with NO drawings: every result is exposed as a plot so the TradingView
+// Pine Screener can filter on it (run the screener on the 15-minute timeframe).
+//
+// Columns (plots):
+//   Candle 1 strong       1 = first 15m candle of today passed (big body, small wicks)
+//   Candle 2 pullback     1 = second candle pulled back 20-60% of candle 1's body
+//   Signal                1 = price passed the trigger on candle 3 (BUY / SELL)
+//   Direction             1 = long, -1 = short, 0 = none
+//   Entry                 trigger price (candle 2 close or high/low)
+//   Stop                  stop-loss price just beyond candle 1's extreme
+//   % to stop             distance from the current price to the stop
+//   Bar in day            1, 2, 3... (which 15m candle of the day is the last one)
+// All values reset when a new New York trading day starts.
+
+indicator("NY Opening Setup Screener", shorttitle = "NY Open Scan", overlay = false)
+
+// ---------- INPUTS (same defaults as the chart indicator) ----------
+sess       = input.session("0930-1600", "New York regular session")
+maxWickPct = input.float(20, "Candle 1: max wicks (% of candle range)", minval = 0, maxval = 100, step = 1)
+bodyMult   = input.float(2.0, "Candle 1: body must be >= X times the average body", minval = 0.5, maxval = 10, step = 0.1)
+bodyAvgLen = input.int(20, "Candle 1: average body over previous N candles", minval = 3, maxval = 200)
+minRetr    = input.float(20, "Candle 2: min pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1)
+maxRetr    = input.float(60, "Candle 2: max pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1)
+trigSrc    = input.string("Candle 2 close", "Candle 3 trigger level", options = ["Candle 2 close", "Candle 2 high/low"])
+slBuf      = input.float(0.10, "Stop-loss: % beyond candle 1 extreme", minval = 0, maxval = 5, step = 0.05)
+
+tz = "America/New_York"
+
+// ---------- SESSION / DAY DETECTION ----------
+inSess   = not na(time(timeframe.period, sess, tz))
+counting = timeframe.isintraday ? inSess : true
+dayKey   = year(time, tz) * 10000 + month(time, tz) * 100 + dayofmonth(time, tz)
+newDay   = dayKey != nz(dayKey[1], -1)
+startTrigger = counting and (newDay or not counting[1])
+
+var int barInDay = 0
+if startTrigger
+    barInDay := 1
+else if counting
+    barInDay += 1
+else
+    barInDay := 0
+
+avgBody = ta.sma(math.abs(close - open), bodyAvgLen)
+
+// ---------- STATE ----------
+var bool  c1Ok    = false
+var bool  c1Bull  = false
+var float c1H     = na
+var float c1L     = na
+var float c1C     = na
+var float c1Body  = na
+var bool  c2Ok    = false
+var float trig    = na
+var bool  fired   = false
+var bool  isLong  = false
+var float slLevel = na
+
+if startTrigger
+    c1Ok    := false
+    c2Ok    := false
+    fired   := false
+    trig    := na
+    slLevel := na
+
+// candle 1 (checked on candle 2)
+if barInDay == 2
+    body1 = math.abs(close[1] - open[1])
+    rng1  = high[1] - low[1]
+    wick1 = rng1 > 0 ? (rng1 - body1) / rng1 * 100 : 100
+    c1Ok   := rng1 > 0 and wick1 <= maxWickPct and body1 >= bodyMult * nz(avgBody[2])
+    c1Bull := close[1] > open[1]
+    c1H    := high[1]
+    c1L    := low[1]
+    c1C    := close[1]
+    c1Body := body1
+
+// candle 2 (checked on candle 3)
+if barInDay == 3 and c1Ok
+    depth = c1Bull ? (c1C - low[1]) / c1Body * 100 : (high[1] - c1C) / c1Body * 100
+    c2Ok := depth >= minRetr and depth <= maxRetr
+    trig := trigSrc == "Candle 2 close" ? close[1] : (c1Bull ? high[1] : low[1])
+
+// candle 3 trigger
+longSig  = barInDay == 3 and c2Ok and not fired and c1Bull and high >= trig
+shortSig = barInDay == 3 and c2Ok and not fired and not c1Bull and low <= trig
+if longSig or shortSig
+    fired   := true
+    isLong  := longSig
+    slLevel := isLong ? c1L * (1 - slBuf / 100) : c1H * (1 + slBuf / 100)
+
+pctToStop = fired ? (isLong ? (close - slLevel) / close * 100 : (slLevel - close) / close * 100) : na
+direction = fired ? (isLong ? 1 : -1) : (c1Ok ? (c1Bull ? 1 : -1) : 0)
+
+// ---------- SCREENER COLUMNS ----------
+plot(c1Ok ? 1 : 0,  "Candle 1 strong")
+plot(c2Ok ? 1 : 0,  "Candle 2 pullback")
+plot(fired ? 1 : 0, "Signal")
+plot(direction,     "Direction")
+plot(trig,          "Entry")
+plot(slLevel,       "Stop")
+plot(pctToStop,     "% to stop")
+plot(barInDay,      "Bar in day")
+
+alertcondition(c1Ok and barInDay == 2, "Candle 1 strong",    "Strong opening candle on {{ticker}}")
+alertcondition(longSig,                "Opening setup LONG",  "Opening setup LONG on {{ticker}}")
+alertcondition(shortSig,               "Opening setup SHORT", "Opening setup SHORT on {{ticker}}")
