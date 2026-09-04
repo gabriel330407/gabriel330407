@@ -54,6 +54,7 @@ sigMode    = input.string("Reversal (follow candle 2)", "Signal direction", opti
      tooltip = "Reversal: trade in the direction of candle 2, the pullback bar. Continuation: trade in the direction of candle 1.")
 waitMin    = input.bool(false, "Wait 1 minute into candle 3 before signalling (real-time only)", group = gSet)
 slBuf      = input.float(0.10, "Stop-loss: % beyond candle 1 extreme", minval = 0, maxval = 5, step = 0.05, group = gSet)
+reqOpp     = input.bool(true, "Candle 2 must close opposite to candle 1", group = gSet)
 showChecks = input.bool(true, "Mark candle 1 / candle 2 when they pass", group = gSet)
 
 tz = "America/New_York"
@@ -235,8 +236,11 @@ tradeLong = sigMode == "Continuation (follow candle 1)" ? c1Bull : not c1Bull
 
 // --- candle 2 check (evaluated on the third candle of the day) ---
 if setupOn and barInDay == 3 and c1Ok
-    depth = c1Bull ? (c1C - low[1]) / c1Body * 100 : (high[1] - c1C) / c1Body * 100
-    c2Ok := depth >= minRetr and depth <= maxRetr
+    depth   = c1Bull ? (c1C - low[1]) / c1Body * 100 : (high[1] - c1C) / c1Body * 100
+    c2Bear  = close[1] < open[1]      // candle 2 is a real red bar
+    c2Bull  = close[1] > open[1]      // candle 2 is a real green bar
+    oppOk   = not reqOpp or (c1Bull ? c2Bear : c2Bull)
+    c2Ok := depth >= minRetr and depth <= maxRetr and oppOk
     trig := trigSrc == "Candle 2 close" ? close[1] : (tradeLong ? high[1] : low[1])
     if c2Ok and showChecks
         label.new(bar_index - 1, c1Bull ? low[1] : high[1], "2",

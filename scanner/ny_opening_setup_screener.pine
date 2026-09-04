@@ -29,6 +29,7 @@ trigSrc    = input.string("Candle 2 close", "Candle 3 trigger level", options = 
 sigMode    = input.string("Reversal (follow candle 2)", "Signal direction", options = ["Reversal (follow candle 2)", "Continuation (follow candle 1)"],
      tooltip = "Reversal: trade in the direction of candle 2, the pullback bar. Continuation: trade in the direction of candle 1.")
 slBuf      = input.float(0.10, "Stop-loss: % beyond candle 1 extreme", minval = 0, maxval = 5, step = 0.05)
+reqOpp     = input.bool(true, "Candle 2 must close opposite to candle 1")
 
 tz = "America/New_York"
 
@@ -86,8 +87,9 @@ tradeLong = sigMode == "Continuation (follow candle 1)" ? c1Bull : not c1Bull
 
 // candle 2 (checked on candle 3)
 if barInDay == 3 and c1Ok
-    depth = c1Bull ? (c1C - low[1]) / c1Body * 100 : (high[1] - c1C) / c1Body * 100
-    c2Ok := depth >= minRetr and depth <= maxRetr
+    depth  = c1Bull ? (c1C - low[1]) / c1Body * 100 : (high[1] - c1C) / c1Body * 100
+    oppOk  = not reqOpp or (c1Bull ? close[1] < open[1] : close[1] > open[1])
+    c2Ok := depth >= minRetr and depth <= maxRetr and oppOk
     trig := trigSrc == "Candle 2 close" ? close[1] : (tradeLong ? high[1] : low[1])
 
 // candle 3 trigger

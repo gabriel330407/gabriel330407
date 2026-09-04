@@ -178,7 +178,7 @@ Exactly **four purple lines** at any time; out-of-date lines are deleted.
 | Step | Condition (all configurable) |
 |------|------------------------------|
 | Candle 1 (first 15m candle of the day) | Wicks ≤ 20 % of the range, body ≥ 2 × the average body of the previous 20 candles |
-| Candle 2 | Pulls back 20–60 % of candle 1's body |
+| Candle 2 | Closes **opposite** to candle 1 and pulls back 20–60 % of candle 1's body |
 | Candle 3 | Price passes candle 2's close (or high/low) in the direction of candle 2, the reversal bar → **BUY / SELL** label (a *Continuation* mode follows candle 1 instead), optional 1-minute wait in real time |
 
 - Stop-loss label + dashed line just beyond candle 1's extreme (buffer % configurable).
