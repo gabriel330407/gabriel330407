@@ -20,8 +20,8 @@ indicator("NY Opening Setup Screener", shorttitle = "NY Open Scan", overlay = fa
 
 // ---------- INPUTS (same defaults as the chart indicator) ----------
 sess       = input.session("0930-1600", "New York regular session")
-maxWickPct = input.float(20, "Candle 1: max wicks (% of candle range)", minval = 0, maxval = 100, step = 1)
-bodyMult   = input.float(2.0, "Candle 1: body must be >= X times the average body", minval = 0.5, maxval = 10, step = 0.1)
+maxWickPct = input.float(25, "Candle 1: max wicks (% of candle range)", minval = 0, maxval = 100, step = 1)
+bodyMult   = input.float(1.8, "Candle 1: body must be >= X times the average body", minval = 0.5, maxval = 10, step = 0.1)
 bodyAvgLen = input.int(20, "Candle 1: average body over previous N candles", minval = 3, maxval = 200)
 minRetr    = input.float(20, "Candle 2: min pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1)
 maxRetr    = input.float(60, "Candle 2: max pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1)
