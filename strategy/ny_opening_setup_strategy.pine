@@ -1,0 +1,182 @@
+//@version=5
+// NY Opening Setup - Backtest Strategy
+// ------------------------------------
+// Same setup as indicator/ny_daily_levels_ladder.pine, wired into TradingView's
+// strategy tester so you can measure win rate, average R, and max drawdown before
+// risking an FTMO challenge. Run on the 15-minute chart of US100 / US500, etc.
+//
+// One trade per day per symbol:
+//   Candle 1 (first 15m of the NY session): big body, small wicks, body >= K x avg.
+//   Candle 2: closes opposite to candle 1 and retraces MIN%..MAX% of its body.
+//   Candle 3 (within the trigger window): price breaks candle 2's level in the
+//             direction of candle 2 -> enter. Stop just beyond candle 1's extreme.
+//   Exit: fixed reward:risk target, OR trail behind each new 15m candle, OR the
+//         session close. Risk per trade is a % of equity (FTMO-style).
+
+strategy("NY Opening Setup Strategy",
+     shorttitle       = "NY Open Strat",
+     overlay          = true,
+     initial_capital  = 100000,
+     default_qty_type = strategy.fixed,
+     default_qty_value= 1,
+     calc_on_every_tick = false,
+     process_orders_on_close = true,
+     max_labels_count = 500)
+
+// ---------- SETUP INPUTS (match the indicator) ----------
+gSet = "Opening candle setup"
+sess       = input.session("0930-1600", "New York regular session", group = gSet)
+maxWickPct = input.float(30, "Candle 1: max wicks (% of candle range)", minval = 0, maxval = 100, step = 1, group = gSet)
+bodyMult   = input.float(1.5, "Candle 1: body >= X times the average body", minval = 0.5, maxval = 10, step = 0.1, group = gSet)
+bodyAvgLen = input.int(20, "Candle 1: average body over previous N candles", minval = 3, maxval = 200, group = gSet)
+minRetr    = input.float(15, "Candle 2: min pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1, group = gSet)
+maxRetr    = input.float(70, "Candle 2: max pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1, group = gSet)
+reqOpp     = input.bool(true, "Candle 2 must close opposite to candle 1", group = gSet)
+trigSrc    = input.string("Candle 2 close", "Trigger level", options = ["Candle 2 close", "Candle 2 high/low"], group = gSet)
+sigMode    = input.string("Reversal (follow candle 2)", "Signal direction", options = ["Reversal (follow candle 2)", "Continuation (follow candle 1)"], group = gSet)
+trigWin    = input.int(1, "Trigger window (candles after candle 2)", minval = 1, maxval = 8, group = gSet)
+slBuf      = input.float(0.10, "Stop-loss: % beyond candle 1 extreme", minval = 0, maxval = 5, step = 0.05, group = gSet)
+
+gRisk = "Risk & exits (FTMO)"
+riskPct    = input.float(0.5, "Risk per trade (% of equity)", minval = 0.1, maxval = 5, step = 0.1, group = gRisk)
+exitMode   = input.string("Fixed R:R", "Exit style", options = ["Fixed R:R", "Trail behind 15m candle"], group = gRisk)
+rr         = input.float(2.0, "Reward : Risk (fixed target)", minval = 0.5, maxval = 10, step = 0.1, group = gRisk)
+closeEod   = input.bool(true, "Close any open trade at session end", group = gRisk)
+maxDayLoss = input.float(5.0, "Stop trading for the day after this % equity loss", minval = 0.5, maxval = 20, step = 0.5, group = gRisk)
+
+gNews = "News caution"
+blockNews  = input.bool(false, "Block trades on news days", group = gNews)
+autoNFP    = input.bool(true, "NFP = first Friday of month", group = gNews)
+newsDates  = input.string("", "Extra news dates (YYYYMMDD, comma separated)", group = gNews)
+
+tz = "America/New_York"
+
+// ---------- SESSION / DAY DETECTION ----------
+inSess   = not na(time(timeframe.period, sess, tz))
+counting = timeframe.isintraday ? inSess : true
+dayKey   = year(time, tz) * 10000 + month(time, tz) * 100 + dayofmonth(time, tz)
+newDay   = dayKey != nz(dayKey[1], -1)
+startTrigger = counting and (newDay or not counting[1])
+sessEnd  = counting[1] and not counting     // first bar after the session closes
+
+var int barInDay = 0
+if startTrigger
+    barInDay := 1
+else if counting
+    barInDay += 1
+else
+    barInDay := 0
+
+avgBody = ta.sma(math.abs(close - open), bodyAvgLen)
+
+// news day?
+isNFP  = dayofweek(time, tz) == dayofweek.friday and dayofmonth(time, tz) <= 7
+inList = false
+if newsDates != ""
+    parts = str.split(newsDates, ",")
+    for i = 0 to array.size(parts) - 1
+        if str.tostring(dayKey) == str.trim(array.get(parts, i))
+            inList := true
+newsDay = (autoNFP and isNFP) or inList
+
+// ---------- SETUP STATE ----------
+var bool  c1Ok    = false
+var bool  c1Bull  = false
+var float c1H     = na
+var float c1L     = na
+var float c1C     = na
+var float c1Body  = na
+var bool  c2Ok    = false
+var float trig    = na
+var bool  fired   = false
+var float dayStartEquity = na
+var bool  dayBlocked = false
+
+if startTrigger
+    c1Ok  := false
+    c2Ok  := false
+    fired := false
+    trig  := na
+    dayStartEquity := strategy.equity
+    dayBlocked := false
+
+// daily loss guard
+if not na(dayStartEquity) and strategy.equity <= dayStartEquity * (1 - maxDayLoss / 100)
+    dayBlocked := true
+
+// candle 1 (on second candle)
+if barInDay == 2
+    body1 = math.abs(close[1] - open[1])
+    rng1  = high[1] - low[1]
+    wick1 = rng1 > 0 ? (rng1 - body1) / rng1 * 100 : 100
+    c1Ok   := rng1 > 0 and wick1 <= maxWickPct and body1 >= bodyMult * nz(avgBody[2])
+    c1Bull := close[1] > open[1]
+    c1H    := high[1]
+    c1L    := low[1]
+    c1C    := close[1]
+    c1Body := body1
+
+tradeLong = sigMode == "Continuation (follow candle 1)" ? c1Bull : not c1Bull
+
+// candle 2 (on third candle)
+if barInDay == 3 and c1Ok
+    depth  = c1Bull ? (c1C - low[1]) / c1Body * 100 : (high[1] - c1C) / c1Body * 100
+    oppOk  = not reqOpp or (c1Bull ? close[1] < open[1] : close[1] > open[1])
+    c2Ok := depth >= minRetr and depth <= maxRetr and oppOk
+    trig := trigSrc == "Candle 2 close" ? close[1] : (tradeLong ? high[1] : low[1])
+
+// trigger
+inWindow  = barInDay >= 3 and barInDay <= 2 + trigWin
+newsBlock = blockNews and newsDay
+longSig  = inWindow and c2Ok and not fired and not dayBlocked and not newsBlock and tradeLong and high >= trig
+shortSig = inWindow and c2Ok and not fired and not dayBlocked and not newsBlock and not tradeLong and low <= trig
+
+// ---------- ENTRIES & EXITS ----------
+var float entryPrice = na
+var float stopPrice  = na
+var float tgtPrice   = na
+var bool  posLong    = false
+
+f_size(float entry, float stop) =>
+    riskCash = strategy.equity * riskPct / 100
+    perUnit  = math.abs(entry - stop)
+    perUnit > 0 ? math.max(1, math.floor(riskCash / perUnit)) : 0
+
+if longSig or shortSig
+    fired      := true
+    posLong    := longSig
+    entryPrice := trig
+    stopPrice  := posLong ? c1L * (1 - slBuf / 100) : c1H * (1 + slBuf / 100)
+    risk       = math.abs(entryPrice - stopPrice)
+    tgtPrice   := posLong ? entryPrice + rr * risk : entryPrice - rr * risk
+    qty        = f_size(entryPrice, stopPrice)
+    if qty > 0
+        if posLong
+            strategy.entry("L", strategy.long, qty = qty)
+        else
+            strategy.entry("S", strategy.short, qty = qty)
+
+// manage the open position
+if strategy.position_size != 0
+    if exitMode == "Fixed R:R"
+        if posLong
+            strategy.exit("xL", from_entry = "L", stop = stopPrice, limit = tgtPrice)
+        else
+            strategy.exit("xS", from_entry = "S", stop = stopPrice, limit = tgtPrice)
+    else
+        // trail behind each completed 15m candle's low/high, keep the hard stop too
+        if posLong
+            stopPrice := math.max(stopPrice, low[1])
+            strategy.exit("xL", from_entry = "L", stop = stopPrice)
+        else
+            stopPrice := math.min(stopPrice, high[1])
+            strategy.exit("xS", from_entry = "S", stop = stopPrice)
+
+// close at session end
+if closeEod and sessEnd and strategy.position_size != 0
+    strategy.close_all(comment = "EOD")
+
+// ---------- VISUALS ----------
+plot(strategy.position_size != 0 ? stopPrice : na, "Stop", color = color.red, style = plot.style_linebr)
+plot(strategy.position_size != 0 and exitMode == "Fixed R:R" ? tgtPrice : na, "Target", color = color.green, style = plot.style_linebr)
+bgcolor(newsDay and blockNews ? color.new(color.orange, 90) : na)

@@ -51,11 +51,11 @@ openKeep  = input.int(10, "How many day-open lines to keep", minval = 1, maxval 
 
 gSet = "Opening candle setup"
 setupOn    = input.bool(true, "Enable opening candle setup", group = gSet)
-maxWickPct = input.float(25, "Candle 1: max wicks (% of candle range)", minval = 0, maxval = 100, step = 1, group = gSet)
-bodyMult   = input.float(1.8, "Candle 1: body must be >= X times the average body", minval = 0.5, maxval = 10, step = 0.1, group = gSet)
+maxWickPct = input.float(30, "Candle 1: max wicks (% of candle range)", minval = 0, maxval = 100, step = 1, group = gSet)
+bodyMult   = input.float(1.5, "Candle 1: body must be >= X times the average body", minval = 0.5, maxval = 10, step = 0.1, group = gSet)
 bodyAvgLen = input.int(20, "Candle 1: average body over previous N candles", minval = 3, maxval = 200, group = gSet)
-minRetr    = input.float(20, "Candle 2: min pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1, group = gSet)
-maxRetr    = input.float(60, "Candle 2: max pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1, group = gSet)
+minRetr    = input.float(15, "Candle 2: min pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1, group = gSet)
+maxRetr    = input.float(70, "Candle 2: max pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1, group = gSet)
 trigSrc    = input.string("Candle 2 close", "Candle 3 trigger level", options = ["Candle 2 close", "Candle 2 high/low"], group = gSet)
 sigMode    = input.string("Reversal (follow candle 2)", "Signal direction", options = ["Reversal (follow candle 2)", "Continuation (follow candle 1)"], group = gSet,
      tooltip = "Reversal: trade in the direction of candle 2, the pullback bar. Continuation: trade in the direction of candle 1.")
