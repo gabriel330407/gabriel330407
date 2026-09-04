@@ -184,6 +184,9 @@ Exactly **four purple lines** at any time; out-of-date lines are deleted.
 - Stop-loss label + dashed line just beyond candle 1's extreme (buffer % configurable).
 - A live "To stop: x.xx %" label follows the price until the session ends.
 - Alerts: *Opening setup LONG* / *Opening setup SHORT* (alertcondition) plus a dynamic `alert()` message with entry and stop.
+- A vertical line marks every 09:30 New York open (color/style/width configurable, keeps the last N).
+- A "News day - caution" label appears on NFP (first Friday, auto) and on any FOMC/CPI dates you list; optionally blocks signals those days.
+- *Trigger window* input: 1 = breakout only on candle 3; raise it to allow the breakout on candle 3, 4, 5... for more trades.
 
 ### Pine Screener version (`scanner/ny_opening_setup_screener.pine`)
 

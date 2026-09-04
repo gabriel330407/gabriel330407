@@ -42,6 +42,13 @@ thickWidth = input.int(4, "Next higher/lower width (thick)", minval = 1, maxval 
 showStatus = input.bool(true, "Show status box", group = gDraw)
 statusSize = input.string("large", "Status box text size", options = ["small", "normal", "large", "huge"], group = gDraw)
 
+gOpen = "Opening line (09:30)"
+showOpen  = input.bool(true, "Draw a vertical line at each day open", group = gOpen)
+openColor = input.color(color.new(#2962FF, 0), "Opening line color", group = gOpen)
+openStyle = input.string("dashed", "Opening line style", options = ["solid", "dashed", "dotted"], group = gOpen)
+openWidth = input.int(1, "Opening line width", minval = 1, maxval = 4, group = gOpen)
+openKeep  = input.int(10, "How many day-open lines to keep", minval = 1, maxval = 60, group = gOpen)
+
 gSet = "Opening candle setup"
 setupOn    = input.bool(true, "Enable opening candle setup", group = gSet)
 maxWickPct = input.float(25, "Candle 1: max wicks (% of candle range)", minval = 0, maxval = 100, step = 1, group = gSet)
@@ -55,7 +62,16 @@ sigMode    = input.string("Reversal (follow candle 2)", "Signal direction", opti
 waitMin    = input.bool(false, "Wait 1 minute into candle 3 before signalling (real-time only)", group = gSet)
 slBuf      = input.float(0.10, "Stop-loss: % beyond candle 1 extreme", minval = 0, maxval = 5, step = 0.05, group = gSet)
 reqOpp     = input.bool(true, "Candle 2 must close opposite to candle 1", group = gSet)
+trigWin    = input.int(1, "Trigger window (candles after candle 2)", minval = 1, maxval = 8, group = gSet,
+     tooltip = "1 = the breakout must happen on candle 3 only. Higher values let the breakout happen on candle 3, 4, 5... giving more trades.")
 showChecks = input.bool(true, "Mark candle 1 / candle 2 when they pass", group = gSet)
+
+gNews = "News caution"
+newsOn     = input.bool(true, "Warn on high-impact news days", group = gNews)
+autoNFP    = input.bool(true, "Auto-flag NFP (first Friday of month)", group = gNews)
+newsDates  = input.string("", "Extra news dates (YYYYMMDD, comma separated)", group = gNews,
+     tooltip = "Add FOMC / CPI days here, e.g. 20260318,20260410. The opening candle is unreliable on these days.")
+blockNews  = input.bool(false, "Also block signals on news days", group = gNews)
 
 tz = "America/New_York"
 
@@ -77,6 +93,7 @@ var float dL        = na       // running low  of the day being built
 var int   dHbar     = na       // bar where that high was made
 var int   dLbar     = na       // bar where that low  was made
 var bool  dayActive = false
+var line[] openLines = array.new_line()
 
 var float[] hist_H    = array.new_float()   // completed day highs (newest last)
 var float[] hist_L    = array.new_float()   // completed day lows  (newest last)
@@ -154,6 +171,16 @@ if dayActive and (startTrigger or not counting)
     daysDone  += 1
     dayActive := false
 
+// is today flagged as a high-impact news day?
+isNFP   = dayofweek(time, tz) == dayofweek.friday and dayofmonth(time, tz) <= 7
+inList  = false
+if newsDates != ""
+    parts = str.split(newsDates, ",")
+    for i = 0 to array.size(parts) - 1
+        if str.tostring(dayKey) == str.trim(array.get(parts, i))
+            inList := true
+newsDay = newsOn and ((autoNFP and isNFP) or inList)
+
 // start building a new day
 if startTrigger
     dayActive := true
@@ -161,6 +188,18 @@ if startTrigger
     dL        := low
     dHbar     := bar_index
     dLbar     := bar_index
+    // vertical line at the 09:30 open
+    if showOpen
+        st = openStyle == "solid" ? line.style_solid : openStyle == "dotted" ? line.style_dotted : line.style_dashed
+        ol = line.new(bar_index, low, bar_index, high, xloc = xloc.bar_index, extend = extend.both,
+             color = openColor, width = openWidth, style = st)
+        array.push(openLines, ol)
+        while array.size(openLines) > openKeep
+            line.delete(array.shift(openLines))
+    // news-day warning label
+    if newsDay
+        label.new(bar_index, high, "News day - caution", style = label.style_label_down,
+             color = color.new(color.orange, 0), textcolor = color.black, size = size.small)
 
 // accumulate the day being built, remembering where the high / low were made
 if dayActive and counting
@@ -251,8 +290,10 @@ if setupOn and barInDay == 3 and c1Ok
 timeOk   = not waitMin or (timenow - time >= 60000)
 crossUp  = tradeLong and high >= trig
 crossDn  = not tradeLong and low <= trig
-longSig  = setupOn and barInDay == 3 and c2Ok and not fired and timeOk and crossUp
-shortSig = setupOn and barInDay == 3 and c2Ok and not fired and timeOk and crossDn
+inWindow = barInDay >= 3 and barInDay <= 2 + trigWin
+newsBlock = blockNews and newsDay
+longSig  = setupOn and inWindow and c2Ok and not fired and timeOk and not newsBlock and crossUp
+shortSig = setupOn and inWindow and c2Ok and not fired and timeOk and not newsBlock and crossDn
 
 if longSig or shortSig
     fired   := true
@@ -301,7 +342,8 @@ if barstate.islast and showStatus
          "Prev day high: " + (na(lnH)  ? "-" : str.tostring(line.get_y1(lnH),  format.mintick)) + "\n" +
          "Prev day low: "  + (na(lnL)  ? "-" : str.tostring(line.get_y1(lnL),  format.mintick)) + "\n" +
          "Next higher: "   + (na(lnNH) ? "-" : str.tostring(line.get_y1(lnNH), format.mintick)) + "\n" +
-         "Next lower: "    + (na(lnNL) ? "-" : str.tostring(line.get_y1(lnNL), format.mintick))
+         "Next lower: "    + (na(lnNL) ? "-" : str.tostring(line.get_y1(lnNL), format.mintick)) + "\n" +
+         "News day: "      + (newsDay ? "YES - caution" : "no")
     tsize = statusSize == "small" ? size.small : statusSize == "normal" ? size.normal : statusSize == "huge" ? size.huge : size.large
     table.cell(info, 0, 0, txt, text_color = color.white, bgcolor = color.new(#9C27B0, 30),
          text_size = tsize, text_halign = text.align_left)
