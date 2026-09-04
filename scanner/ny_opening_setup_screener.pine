@@ -20,11 +20,11 @@ indicator("NY Opening Setup Screener", shorttitle = "NY Open Scan", overlay = fa
 
 // ---------- INPUTS (same defaults as the chart indicator) ----------
 sess       = input.session("0930-1600", "New York regular session")
-maxWickPct = input.float(30, "Candle 1: max wicks (% of candle range)", minval = 0, maxval = 100, step = 1)
-bodyMult   = input.float(1.5, "Candle 1: body must be >= X times the average body", minval = 0.5, maxval = 10, step = 0.1)
+maxWickPct = input.float(35, "Candle 1: max wicks (% of candle range)", minval = 0, maxval = 100, step = 1)
+bodyMult   = input.float(1.3, "Candle 1: body must be >= X times the average body", minval = 0.5, maxval = 10, step = 0.1)
 bodyAvgLen = input.int(20, "Candle 1: average body over previous N candles", minval = 3, maxval = 200)
-minRetr    = input.float(15, "Candle 2: min pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1)
-maxRetr    = input.float(70, "Candle 2: max pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1)
+minRetr    = input.float(10, "Candle 2: min pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1)
+maxRetr    = input.float(80, "Candle 2: max pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1)
 trigSrc    = input.string("Candle 2 close", "Candle 3 trigger level", options = ["Candle 2 close", "Candle 2 high/low"])
 sigMode    = input.string("Reversal (follow candle 2)", "Signal direction", options = ["Reversal (follow candle 2)", "Continuation (follow candle 1)"],
      tooltip = "Reversal: trade in the direction of candle 2, the pullback bar. Continuation: trade in the direction of candle 1.")
