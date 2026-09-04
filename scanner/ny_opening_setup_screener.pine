@@ -26,6 +26,8 @@ bodyAvgLen = input.int(20, "Candle 1: average body over previous N candles", min
 minRetr    = input.float(20, "Candle 2: min pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1)
 maxRetr    = input.float(60, "Candle 2: max pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1)
 trigSrc    = input.string("Candle 2 close", "Candle 3 trigger level", options = ["Candle 2 close", "Candle 2 high/low"])
+sigMode    = input.string("Reversal (follow candle 2)", "Signal direction", options = ["Reversal (follow candle 2)", "Continuation (follow candle 1)"],
+     tooltip = "Reversal: trade in the direction of candle 2, the pullback bar. Continuation: trade in the direction of candle 1.")
 slBuf      = input.float(0.10, "Stop-loss: % beyond candle 1 extreme", minval = 0, maxval = 5, step = 0.05)
 
 tz = "America/New_York"
@@ -79,22 +81,25 @@ if barInDay == 2
     c1C    := close[1]
     c1Body := body1
 
+// direction of the trade: candle 2 is the pullback, so it points opposite to candle 1
+tradeLong = sigMode == "Continuation (follow candle 1)" ? c1Bull : not c1Bull
+
 // candle 2 (checked on candle 3)
 if barInDay == 3 and c1Ok
     depth = c1Bull ? (c1C - low[1]) / c1Body * 100 : (high[1] - c1C) / c1Body * 100
     c2Ok := depth >= minRetr and depth <= maxRetr
-    trig := trigSrc == "Candle 2 close" ? close[1] : (c1Bull ? high[1] : low[1])
+    trig := trigSrc == "Candle 2 close" ? close[1] : (tradeLong ? high[1] : low[1])
 
 // candle 3 trigger
-longSig  = barInDay == 3 and c2Ok and not fired and c1Bull and high >= trig
-shortSig = barInDay == 3 and c2Ok and not fired and not c1Bull and low <= trig
+longSig  = barInDay == 3 and c2Ok and not fired and tradeLong and high >= trig
+shortSig = barInDay == 3 and c2Ok and not fired and not tradeLong and low <= trig
 if longSig or shortSig
     fired   := true
     isLong  := longSig
     slLevel := isLong ? c1L * (1 - slBuf / 100) : c1H * (1 + slBuf / 100)
 
 pctToStop = fired ? (isLong ? (close - slLevel) / close * 100 : (slLevel - close) / close * 100) : na
-direction = fired ? (isLong ? 1 : -1) : (c1Ok ? (c1Bull ? 1 : -1) : 0)
+direction = fired ? (isLong ? 1 : -1) : (c1Ok ? (tradeLong ? 1 : -1) : 0)
 
 // ---------- SCREENER COLUMNS ----------
 plot(c1Ok ? 1 : 0,  "Candle 1 strong")

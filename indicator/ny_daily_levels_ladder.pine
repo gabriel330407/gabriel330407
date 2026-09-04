@@ -14,7 +14,9 @@
 //   Candle 1 (first 15m candle of the day): big body, wicks <= X% of range,
 //             body >= K x the average body of the previous candles.
 //   Candle 2: a decent pullback, retracing between MIN% and MAX% of candle 1's body.
-//   Candle 3: as soon as price passes candle 2's close (or high/low)
+//   Candle 3: as soon as price passes candle 2's close (or high/low) in the
+//             direction of candle 2 (the reversal bar; a "Continuation" mode
+//             follows candle 1 instead)
 //             -> BUY / SELL label, stop-loss label + line just beyond candle 1's
 //                extreme, and a live "% to stop" label that follows the price.
 
@@ -48,6 +50,8 @@ bodyAvgLen = input.int(20, "Candle 1: average body over previous N candles", min
 minRetr    = input.float(20, "Candle 2: min pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1, group = gSet)
 maxRetr    = input.float(60, "Candle 2: max pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1, group = gSet)
 trigSrc    = input.string("Candle 2 close", "Candle 3 trigger level", options = ["Candle 2 close", "Candle 2 high/low"], group = gSet)
+sigMode    = input.string("Reversal (follow candle 2)", "Signal direction", options = ["Reversal (follow candle 2)", "Continuation (follow candle 1)"], group = gSet,
+     tooltip = "Reversal: trade in the direction of candle 2, the pullback bar. Continuation: trade in the direction of candle 1.")
 waitMin    = input.bool(false, "Wait 1 minute into candle 3 before signalling (real-time only)", group = gSet)
 slBuf      = input.float(0.10, "Stop-loss: % beyond candle 1 extreme", minval = 0, maxval = 5, step = 0.05, group = gSet)
 showChecks = input.bool(true, "Mark candle 1 / candle 2 when they pass", group = gSet)
@@ -226,11 +230,14 @@ if setupOn and barInDay == 2
              style = c1Bull ? label.style_label_up : label.style_label_down,
              color = color.new(#9C27B0, 0), textcolor = color.white, size = size.tiny)
 
+// direction of the trade: candle 2 is the pullback, so it points opposite to candle 1
+tradeLong = sigMode == "Continuation (follow candle 1)" ? c1Bull : not c1Bull
+
 // --- candle 2 check (evaluated on the third candle of the day) ---
 if setupOn and barInDay == 3 and c1Ok
     depth = c1Bull ? (c1C - low[1]) / c1Body * 100 : (high[1] - c1C) / c1Body * 100
     c2Ok := depth >= minRetr and depth <= maxRetr
-    trig := trigSrc == "Candle 2 close" ? close[1] : (c1Bull ? high[1] : low[1])
+    trig := trigSrc == "Candle 2 close" ? close[1] : (tradeLong ? high[1] : low[1])
     if c2Ok and showChecks
         label.new(bar_index - 1, c1Bull ? low[1] : high[1], "2",
              style = c1Bull ? label.style_label_up : label.style_label_down,
@@ -238,8 +245,8 @@ if setupOn and barInDay == 3 and c1Ok
 
 // --- candle 3 trigger ---
 timeOk   = not waitMin or (timenow - time >= 60000)
-crossUp  = c1Bull and high >= trig
-crossDn  = not c1Bull and low <= trig
+crossUp  = tradeLong and high >= trig
+crossDn  = not tradeLong and low <= trig
 longSig  = setupOn and barInDay == 3 and c2Ok and not fired and timeOk and crossUp
 shortSig = setupOn and barInDay == 3 and c2Ok and not fired and timeOk and crossDn
 
