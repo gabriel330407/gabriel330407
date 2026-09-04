@@ -44,6 +44,7 @@ lookback   = input.int(60, "Look back (days) for NEXT HIGHER / NEXT LOWER", minv
 trigSrc    = input.string("Candle 2 close", "Trigger level", options = ["Candle 2 close", "Candle 2 high/low"], group = gSet)
 sigMode    = input.string("Reversal (follow candle 2)", "Signal direction", options = ["Reversal (follow candle 2)", "Continuation (follow candle 1)"], group = gSet)
 trigWin    = input.int(1, "Trigger window (candles after candle 2)", minval = 1, maxval = 8, group = gSet)
+openWin    = input.int(1, "Impulse candle within first N session candles", minval = 1, maxval = 12, group = gSet)
 slBuf      = input.float(0.10, "Stop-loss: % beyond candle 1 extreme", minval = 0, maxval = 5, step = 0.05, group = gSet)
 
 gRisk = "Risk & exits (FTMO)"
@@ -158,22 +159,31 @@ if startTrigger
 if not na(dayStartEquity) and strategy.equity <= dayStartEquity * (1 - maxDayLoss / 100)
     dayBlocked := true
 
-// candle 1 (on second candle)
-if barInDay == 2
+// impulse candle (candle 1) may appear on any of the first N session candles
+var int c1pos = 0
+if startTrigger
+    c1pos := 0
+
+qPos = barInDay - 1   // day-position of the just-closed candle (data is [1])
+
+// search for candle 1
+if not fired and not c2Ok and c1pos == 0 and qPos >= 1 and qPos <= openWin
     body1 = math.abs(close[1] - open[1])
     rng1  = high[1] - low[1]
     wick1 = rng1 > 0 ? (rng1 - body1) / rng1 * 100 : 100
-    c1Ok   := rng1 > 0 and wick1 <= maxWickPct and body1 >= bodyMult * nz(avgBody[2])
-    c1Bull := close[1] > open[1]
-    c1H    := high[1]
-    c1L    := low[1]
-    c1C    := close[1]
-    c1Body := body1
+    if rng1 > 0 and wick1 <= maxWickPct and body1 >= bodyMult * nz(avgBody[2])
+        c1pos  := qPos
+        c1Ok   := true
+        c1Bull := close[1] > open[1]
+        c1H    := high[1]
+        c1L    := low[1]
+        c1C    := close[1]
+        c1Body := body1
 
 tradeLong = sigMode == "Continuation (follow candle 1)" ? c1Bull : not c1Bull
 
-// candle 2 (on third candle)
-if barInDay == 3 and c1Ok
+// candle 2 = the candle right after candle 1
+if c1pos > 0 and not c2Ok and not fired and qPos == c1pos + 1
     depth  = c1Bull ? (c1C - low[1]) / c1Body * 100 : (high[1] - c1C) / c1Body * 100
     oppOk  = not reqOpp or (c1Bull ? close[1] < open[1] : close[1] > open[1])
     c2close = close[1]
@@ -181,14 +191,18 @@ if barInDay == 3 and c1Ok
     inUpper = not na(pdHigh) and c2close >= pdHigh - tol and (na(nHigher) or c2close <= nHigher + tol)
     inLower = not na(pdLow)  and c2close <= pdLow  + tol and (na(nLower)  or c2close >= nLower  - tol)
     edgeOk  = not requireEdge or inUpper or inLower
-    c2Ok := depth >= minRetr and depth <= maxRetr and oppOk and edgeOk
-    trig := trigSrc == "Candle 2 close" ? close[1] : (tradeLong ? high[1] : low[1])
+    if depth >= minRetr and depth <= maxRetr and oppOk and edgeOk
+        c2Ok := true
+        trig := trigSrc == "Candle 2 close" ? close[1] : (tradeLong ? high[1] : low[1])
+    else
+        c1pos := 0
+        c1Ok  := false
 
 // trigger
-inWindow  = barInDay >= 3 and barInDay <= 2 + trigWin
+inWindow  = c2Ok and barInDay >= c1pos + 2 and barInDay <= c1pos + 1 + trigWin
 newsBlock = blockNews and newsDay
-longSig  = inWindow and c2Ok and not fired and not dayBlocked and not newsBlock and tradeLong and high >= trig
-shortSig = inWindow and c2Ok and not fired and not dayBlocked and not newsBlock and not tradeLong and low <= trig
+longSig  = inWindow and not fired and not dayBlocked and not newsBlock and tradeLong and high >= trig
+shortSig = inWindow and not fired and not dayBlocked and not newsBlock and not tradeLong and low <= trig
 
 // ---------- ENTRIES & EXITS ----------
 var float stopPrice = na

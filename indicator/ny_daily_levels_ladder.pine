@@ -63,7 +63,9 @@ waitMin    = input.bool(false, "Wait 1 minute into candle 3 before signalling (r
 slBuf      = input.float(0.10, "Stop-loss: % beyond candle 1 extreme", minval = 0, maxval = 5, step = 0.05, group = gSet)
 reqOpp     = input.bool(true, "Candle 2 must close opposite to candle 1", group = gSet)
 trigWin    = input.int(1, "Trigger window (candles after candle 2)", minval = 1, maxval = 8, group = gSet,
-     tooltip = "1 = the breakout must happen on candle 3 only. Higher values let the breakout happen on candle 3, 4, 5... giving more trades.")
+     tooltip = "1 = the breakout must happen on the candle right after candle 2 only. Higher values let the breakout happen a few candles later, giving more trades.")
+openWin    = input.int(1, "Impulse candle within first N session candles", minval = 1, maxval = 12, group = gSet,
+     tooltip = "1 = only the very first 15m candle can be the impulse (candle 1). Higher values let a strong impulse candle later in the opening also start a setup, giving more trades. One trade per day still.")
 requireEdge = input.bool(true, "Candle 2 must close near a day-range edge (not the middle)", group = gSet,
      tooltip = "Only trigger when candle 2 closes in the zone between the previous-day HIGH and the NEXT HIGHER line, or between the previous-day LOW and the NEXT LOWER line. A middle close (between yesterday's high and low) is rejected.")
 edgeTolPct  = input.float(0.15, "Edge tolerance (% of price outside/inside the zone)", minval = 0, maxval = 5, step = 0.05, group = gSet)
@@ -256,31 +258,42 @@ if startTrigger
     fired := false
     trig  := na
 
-// --- candle 1 check (evaluated on the second candle of the day) ---
-if setupOn and barInDay == 2
+// impulse candle (candle 1) may appear on any of the first N session candles.
+// c1pos = the day-position of the impulse candle (0 = still searching).
+var int c1pos = 0
+if startTrigger
+    c1pos := 0
+
+qPos = barInDay - 1   // day-position of the just-closed candle (its data is [1])
+
+// --- search for candle 1 (the impulse) within the opening window ---
+if setupOn and not fired and not c2Ok and c1pos == 0 and qPos >= 1 and qPos <= openWin
     body1 = math.abs(close[1] - open[1])
     rng1  = high[1] - low[1]
     wick1 = rng1 > 0 ? (rng1 - body1) / rng1 * 100 : 100
-    c1Ok   := rng1 > 0 and wick1 <= maxWickPct and body1 >= bodyMult * nz(avgBody[2])
-    c1Bull := close[1] > open[1]
-    c1O    := open[1]
-    c1H    := high[1]
-    c1L    := low[1]
-    c1C    := close[1]
-    c1Body := body1
-    if c1Ok and showChecks
-        label.new(bar_index - 1, c1Bull ? low[1] : high[1], "1",
-             style = c1Bull ? label.style_label_up : label.style_label_down,
-             color = color.new(#9C27B0, 0), textcolor = color.white, size = size.tiny)
+    ok1 = rng1 > 0 and wick1 <= maxWickPct and body1 >= bodyMult * nz(avgBody[2])
+    if ok1
+        c1pos  := qPos
+        c1Ok   := true
+        c1Bull := close[1] > open[1]
+        c1O    := open[1]
+        c1H    := high[1]
+        c1L    := low[1]
+        c1C    := close[1]
+        c1Body := body1
+        if showChecks
+            label.new(bar_index - 1, c1Bull ? low[1] : high[1], "1",
+                 style = c1Bull ? label.style_label_up : label.style_label_down,
+                 color = color.new(#9C27B0, 0), textcolor = color.white, size = size.tiny)
 
 // direction of the trade: candle 2 is the pullback, so it points opposite to candle 1
 tradeLong = sigMode == "Continuation (follow candle 1)" ? c1Bull : not c1Bull
 
-// --- candle 2 check (evaluated on the third candle of the day) ---
-if setupOn and barInDay == 3 and c1Ok
+// --- candle 2 = the candle right after candle 1 ---
+if setupOn and c1pos > 0 and not c2Ok and not fired and qPos == c1pos + 1
     depth   = c1Bull ? (c1C - low[1]) / c1Body * 100 : (high[1] - c1C) / c1Body * 100
-    c2Bear  = close[1] < open[1]      // candle 2 is a real red bar
-    c2Bull  = close[1] > open[1]      // candle 2 is a real green bar
+    c2Bear  = close[1] < open[1]
+    c2Bull  = close[1] > open[1]
     oppOk   = not reqOpp or (c1Bull ? c2Bear : c2Bull)
     // candle 2 must close near a day-range edge, using the (previous-day) ladder lines
     prevHigh = na(lnH)  ? na : line.get_y1(lnH)
@@ -292,21 +305,26 @@ if setupOn and barInDay == 3 and c1Ok
     inUpper  = not na(prevHigh) and c2close >= prevHigh - tol and (na(nHigher) or c2close <= nHigher + tol)
     inLower  = not na(prevLow)  and c2close <= prevLow  + tol and (na(nLower)  or c2close >= nLower  - tol)
     edgeOk   = not requireEdge or inUpper or inLower
-    c2Ok := depth >= minRetr and depth <= maxRetr and oppOk and edgeOk
-    trig := trigSrc == "Candle 2 close" ? close[1] : (tradeLong ? high[1] : low[1])
-    if c2Ok and showChecks
-        label.new(bar_index - 1, c1Bull ? low[1] : high[1], "2",
-             style = c1Bull ? label.style_label_up : label.style_label_down,
-             color = color.new(#9C27B0, 0), textcolor = color.white, size = size.tiny)
+    ok2 = depth >= minRetr and depth <= maxRetr and oppOk and edgeOk
+    if ok2
+        c2Ok := true
+        trig := trigSrc == "Candle 2 close" ? close[1] : (tradeLong ? high[1] : low[1])
+        if showChecks
+            label.new(bar_index - 1, c1Bull ? low[1] : high[1], "2",
+                 style = c1Bull ? label.style_label_up : label.style_label_down,
+                 color = color.new(#9C27B0, 0), textcolor = color.white, size = size.tiny)
+    else
+        c1pos := 0   // not a valid pullback - keep looking for a fresh impulse in the window
+        c1Ok  := false
 
-// --- candle 3 trigger ---
+// --- trigger: breakout within the trigger window after candle 2 ---
 timeOk   = not waitMin or (timenow - time >= 60000)
 crossUp  = tradeLong and high >= trig
 crossDn  = not tradeLong and low <= trig
-inWindow = barInDay >= 3 and barInDay <= 2 + trigWin
+inWindow = c2Ok and barInDay >= c1pos + 2 and barInDay <= c1pos + 1 + trigWin
 newsBlock = blockNews and newsDay
-longSig  = setupOn and inWindow and c2Ok and not fired and timeOk and not newsBlock and crossUp
-shortSig = setupOn and inWindow and c2Ok and not fired and timeOk and not newsBlock and crossDn
+longSig  = setupOn and inWindow and not fired and timeOk and not newsBlock and crossUp
+shortSig = setupOn and inWindow and not fired and timeOk and not newsBlock and crossDn
 
 if longSig or shortSig
     fired   := true
