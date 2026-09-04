@@ -7,11 +7,13 @@
 //
 // One trade per day per symbol:
 //   Candle 1 (first 15m of the NY session): big body, small wicks, body >= K x avg.
-//   Candle 2: closes opposite to candle 1 and retraces MIN%..MAX% of its body.
+//   Candle 2: closes opposite to candle 1, retraces MIN%..MAX% of its body, AND
+//             closes NEAR a day-range edge (between prev-day HIGH and NEXT HIGHER,
+//             or between prev-day LOW and NEXT LOWER) - not in the middle.
 //   Candle 3 (within the trigger window): price breaks candle 2's level in the
 //             direction of candle 2 -> enter. Stop just beyond candle 1's extreme.
 //   Exit: fixed reward:risk target, OR trail behind each new 15m candle, OR the
-//         session close. Risk per trade is a % of equity (FTMO-style).
+//         session close. Risk per trade is a % of equity; commission is modelled.
 
 strategy("NY Opening Setup Strategy",
      shorttitle       = "NY Open Strat",
@@ -21,6 +23,10 @@ strategy("NY Opening Setup Strategy",
      default_qty_value= 1,
      calc_on_every_tick = false,
      process_orders_on_close = true,
+     commission_type  = strategy.commission.cash_per_order,
+     commission_value = 25,        // $ per order (entry and exit are each an order)
+     slippage         = 0,
+     max_lines_count  = 500,
      max_labels_count = 500)
 
 // ---------- SETUP INPUTS (match the indicator) ----------
@@ -32,13 +38,17 @@ bodyAvgLen = input.int(20, "Candle 1: average body over previous N candles", min
 minRetr    = input.float(15, "Candle 2: min pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1, group = gSet)
 maxRetr    = input.float(70, "Candle 2: max pullback (% of candle 1 body)", minval = 0, maxval = 100, step = 1, group = gSet)
 reqOpp     = input.bool(true, "Candle 2 must close opposite to candle 1", group = gSet)
+requireEdge = input.bool(true, "Candle 2 must close near a day-range edge (not the middle)", group = gSet)
+edgeTolPct  = input.float(0.15, "Edge tolerance (% of price outside/inside the zone)", minval = 0, maxval = 5, step = 0.05, group = gSet)
+lookback   = input.int(60, "Look back (days) for NEXT HIGHER / NEXT LOWER", minval = 1, maxval = 250, group = gSet)
 trigSrc    = input.string("Candle 2 close", "Trigger level", options = ["Candle 2 close", "Candle 2 high/low"], group = gSet)
 sigMode    = input.string("Reversal (follow candle 2)", "Signal direction", options = ["Reversal (follow candle 2)", "Continuation (follow candle 1)"], group = gSet)
 trigWin    = input.int(1, "Trigger window (candles after candle 2)", minval = 1, maxval = 8, group = gSet)
 slBuf      = input.float(0.10, "Stop-loss: % beyond candle 1 extreme", minval = 0, maxval = 5, step = 0.05, group = gSet)
 
 gRisk = "Risk & exits (FTMO)"
-riskPct    = input.float(0.5, "Risk per trade (% of equity)", minval = 0.1, maxval = 5, step = 0.1, group = gRisk)
+riskPct    = input.float(0.6, "Risk per trade (% of equity)", minval = 0.5, maxval = 1.0, step = 0.1, group = gRisk,
+     tooltip = "Desired 0.6%. Lot rounding means the realised risk lands somewhere in the 0.5-1.0% band.")
 exitMode   = input.string("Fixed R:R", "Exit style", options = ["Fixed R:R", "Trail behind 15m candle"], group = gRisk)
 rr         = input.float(2.0, "Reward : Risk (fixed target)", minval = 0.5, maxval = 10, step = 0.1, group = gRisk)
 closeEod   = input.bool(true, "Close any open trade at session end", group = gRisk)
@@ -57,7 +67,7 @@ counting = timeframe.isintraday ? inSess : true
 dayKey   = year(time, tz) * 10000 + month(time, tz) * 100 + dayofmonth(time, tz)
 newDay   = dayKey != nz(dayKey[1], -1)
 startTrigger = counting and (newDay or not counting[1])
-sessEnd  = counting[1] and not counting     // first bar after the session closes
+sessEnd  = counting[1] and not counting
 
 var int barInDay = 0
 if startTrigger
@@ -78,6 +88,50 @@ if newsDates != ""
         if str.tostring(dayKey) == str.trim(array.get(parts, i))
             inList := true
 newsDay = (autoNFP and isNFP) or inList
+
+// ---------- DAY LADDER (prev-day high/low + nearest higher/lower) ----------
+var float dH = na
+var float dL = na
+var bool  dayActive = false
+var float[] hist_H = array.new_float()
+var float[] hist_L = array.new_float()
+// levels valid for "today", set when the previous day finalises
+var float pdHigh  = na
+var float pdLow   = na
+var float nHigher = na
+var float nLower  = na
+
+if dayActive and (startTrigger or not counting)
+    float nh = na
+    float nl = na
+    n = array.size(hist_H)
+    if n > 0
+        for i = n - 1 to math.max(0, n - lookback)
+            v = array.get(hist_H, i)
+            w = array.get(hist_L, i)
+            if v > dH and (na(nh) or v < nh)
+                nh := v
+            if w < dL and (na(nl) or w > nl)
+                nl := w
+    pdHigh  := dH
+    pdLow   := dL
+    nHigher := nh
+    nLower  := nl
+    array.push(hist_H, dH)
+    array.push(hist_L, dL)
+    while array.size(hist_H) > lookback
+        array.shift(hist_H)
+        array.shift(hist_L)
+    dayActive := false
+
+if startTrigger
+    dayActive := true
+    dH := high
+    dL := low
+
+if dayActive and counting
+    dH := math.max(dH, high)
+    dL := math.min(dL, low)
 
 // ---------- SETUP STATE ----------
 var bool  c1Ok    = false
@@ -122,7 +176,12 @@ tradeLong = sigMode == "Continuation (follow candle 1)" ? c1Bull : not c1Bull
 if barInDay == 3 and c1Ok
     depth  = c1Bull ? (c1C - low[1]) / c1Body * 100 : (high[1] - c1C) / c1Body * 100
     oppOk  = not reqOpp or (c1Bull ? close[1] < open[1] : close[1] > open[1])
-    c2Ok := depth >= minRetr and depth <= maxRetr and oppOk
+    c2close = close[1]
+    tol     = c2close * edgeTolPct / 100
+    inUpper = not na(pdHigh) and c2close >= pdHigh - tol and (na(nHigher) or c2close <= nHigher + tol)
+    inLower = not na(pdLow)  and c2close <= pdLow  + tol and (na(nLower)  or c2close >= nLower  - tol)
+    edgeOk  = not requireEdge or inUpper or inLower
+    c2Ok := depth >= minRetr and depth <= maxRetr and oppOk and edgeOk
     trig := trigSrc == "Candle 2 close" ? close[1] : (tradeLong ? high[1] : low[1])
 
 // trigger
@@ -132,24 +191,24 @@ longSig  = inWindow and c2Ok and not fired and not dayBlocked and not newsBlock 
 shortSig = inWindow and c2Ok and not fired and not dayBlocked and not newsBlock and not tradeLong and low <= trig
 
 // ---------- ENTRIES & EXITS ----------
-var float entryPrice = na
-var float stopPrice  = na
-var float tgtPrice   = na
-var bool  posLong    = false
+var float stopPrice = na
+var float tgtPrice  = na
+var bool  posLong   = false
 
-f_size(float entry, float stop) =>
+f_size(float fill, float stop) =>
     riskCash = strategy.equity * riskPct / 100
-    perUnit  = math.abs(entry - stop)
+    perUnit  = math.abs(fill - stop)
     perUnit > 0 ? math.max(1, math.floor(riskCash / perUnit)) : 0
 
 if longSig or shortSig
-    fired      := true
-    posLong    := longSig
-    entryPrice := trig
-    stopPrice  := posLong ? c1L * (1 - slBuf / 100) : c1H * (1 + slBuf / 100)
-    risk       = math.abs(entryPrice - stopPrice)
-    tgtPrice   := posLong ? entryPrice + rr * risk : entryPrice - rr * risk
-    qty        = f_size(entryPrice, stopPrice)
+    fired     := true
+    posLong   := longSig
+    // orders execute on this bar's CLOSE, so size and target from the real fill
+    fill      = close
+    stopPrice := posLong ? c1L * (1 - slBuf / 100) : c1H * (1 + slBuf / 100)
+    risk      = math.abs(fill - stopPrice)
+    tgtPrice  := posLong ? fill + rr * risk : fill - rr * risk
+    qty       = f_size(fill, stopPrice)
     if qty > 0
         if posLong
             strategy.entry("L", strategy.long, qty = qty)
@@ -164,7 +223,6 @@ if strategy.position_size != 0
         else
             strategy.exit("xS", from_entry = "S", stop = stopPrice, limit = tgtPrice)
     else
-        // trail behind each completed 15m candle's low/high, keep the hard stop too
         if posLong
             stopPrice := math.max(stopPrice, low[1])
             strategy.exit("xL", from_entry = "L", stop = stopPrice)
