@@ -1,0 +1,177 @@
+//@version=5
+// =============================================================================
+// Bollinger Harami Ichimoku - STRATEGY (backtest)
+// -----------------------------------------------------------------------------
+// Designed for the 5-minute chart (works on any timeframe).
+//
+// Indicators (standard setups):
+//   - Bollinger Bands (20, 2)  -> basis/middle line is OFF by default
+//   - Ichimoku                 -> only the Baseline (Kijun-sen) is used
+//
+// Signal = Harami candlestick pattern (long AND short).
+//
+//   LONG : the FIRST (large) candle CLOSES BELOW the lower Bollinger Band, and
+//          the SECOND candle confirms a BULLISH Harami  -> enter long.
+//   SHORT: the FIRST (large) candle CLOSES ABOVE the upper Bollinger Band, and
+//          the SECOND candle confirms a BEARISH Harami  -> enter short.
+//
+//   EXIT : price reaches the Ichimoku Baseline (Kijun-sen).
+//   STOP : dynamic - last swing low (long) / swing high (short) + ATR buffer.
+// =============================================================================
+
+strategy("Bollinger Harami Ichimoku",
+     shorttitle              = "BB-Harami",
+     overlay                 = true,
+     initial_capital         = 10000,
+     default_qty_type        = strategy.percent_of_equity,
+     default_qty_value       = 10,
+     pyramiding              = 0,
+     commission_type         = strategy.commission.percent,
+     commission_value        = 0.02,
+     slippage                = 1,
+     process_orders_on_close = true,
+     calc_on_every_tick      = false)
+
+// ---------- INPUT GROUPS ----------
+gBB   = "Bollinger Bands"
+gIch  = "Ichimoku (Baseline)"
+gPat  = "Harami Pattern"
+gRisk = "Risk / Exit"
+gViz  = "Visuals"
+
+// ---------- BOLLINGER BANDS ----------
+bbLen     = input.int(20,   "BB Length",          minval=1,   group=gBB)
+bbMult    = input.float(2.0,"BB StdDev Mult",     minval=0.1, step=0.1, group=gBB)
+bbSrc     = input.source(close, "BB Source",      group=gBB)
+showBasis = input.bool(false,"Show BB Basis (middle line)", group=gBB)
+
+// ---------- ICHIMOKU BASELINE (Kijun-sen) ----------
+baseLen        = input.int(26, "Baseline (Kijun) Length",      minval=1, group=gIch)
+convLen        = input.int(9,  "Conversion (Tenkan) Length",   minval=1, group=gIch)
+showConversion = input.bool(false, "Show Conversion line (Tenkan)", group=gIch)
+
+// ---------- HARAMI PATTERN ----------
+allowLong  = input.bool(true, "Enable Longs",  group=gPat)
+allowShort = input.bool(true, "Enable Shorts", group=gPat)
+oppColor   = input.bool(true, "Require 2nd candle to be opposite color", group=gPat)
+minBodyPct = input.float(0.0, "Min 1st-candle body vs range (0 = off)",  minval=0.0, maxval=1.0, step=0.05, group=gPat)
+
+// ---------- RISK / EXIT ----------
+swingLookback = input.int(10,  "Swing Lookback (bars) for stop", minval=1,   group=gRisk)
+atrLen        = input.int(14,  "ATR Length (stop buffer)",       minval=1,   group=gRisk)
+atrBufferMult = input.float(0.5,"Stop buffer (x ATR)",           minval=0.0, step=0.1, group=gRisk)
+exitOnBase    = input.bool(true,"Exit at Ichimoku Baseline (Kijun)", group=gRisk)
+
+// ---------- VISUALS ----------
+showSignals = input.bool(true, "Show BUY/SELL markers", group=gViz)
+showLevels  = input.bool(true, "Plot active Stop / Target", group=gViz)
+
+// =============================================================================
+// INDICATOR CALCULATIONS
+// =============================================================================
+
+// --- Bollinger Bands ---
+[bbBasis, bbUpper, bbLower] = ta.bb(bbSrc, bbLen, bbMult)
+
+// --- Ichimoku lines (midpoint of Donchian channel) ---
+donchian(len) => math.avg(ta.highest(high, len), ta.lowest(low, len))
+kijun  = donchian(baseLen)   // Baseline  (exit target)
+tenkan = donchian(convLen)   // Conversion line (optional display only)
+
+// --- ATR (stop buffer) ---
+atrV = ta.atr(atrLen)
+
+// =============================================================================
+// HARAMI PATTERN DETECTION
+//   Bar [1] = first (large) candle, Bar [0] = second (small) confirming candle.
+//   The 2nd candle's real body must be contained within the 1st candle's body.
+// =============================================================================
+body1Top = math.max(open[1], close[1])
+body1Bot = math.min(open[1], close[1])
+body0Top = math.max(open, close)
+body0Bot = math.min(open, close)
+
+body1Size = body1Top - body1Bot
+body0Size = body0Top - body0Bot
+range1    = high[1] - low[1]
+
+bear1 = close[1] < open[1]           // first candle bearish
+bull1 = close[1] > open[1]           // first candle bullish
+bull0 = close > open                 // second candle bullish
+bear0 = close < open                 // second candle bearish
+
+// 2nd body fully inside 1st body, and strictly smaller (true "harami")
+contained   = body0Top <= body1Top and body0Bot >= body1Bot
+smallerBody = body0Size < body1Size
+bigEnough1  = minBodyPct <= 0.0 or (range1 > 0 and body1Size / range1 >= minBodyPct)
+
+bullHarami = bear1 and (not oppColor or bull0) and contained and smallerBody and bigEnough1
+bearHarami = bull1 and (not oppColor or bear0) and contained and smallerBody and bigEnough1
+
+// =============================================================================
+// ENTRY CONDITIONS
+//   First candle (bar [1]) must have CLOSED OUTSIDE the band.
+// =============================================================================
+firstBelowLower = close[1] < bbLower[1]   // first candle closed below lower band
+firstAboveUpper = close[1] > bbUpper[1]   // first candle closed above upper band
+
+flat = strategy.position_size == 0
+
+longSig  = allowLong  and bullHarami and firstBelowLower and flat
+shortSig = allowShort and bearHarami and firstAboveUpper and flat
+
+// =============================================================================
+// ORDERS
+// =============================================================================
+var float stopP   = na    // active stop price
+var float targetP = na    // active target (baseline) - for plotting only
+
+if longSig
+    stopP := ta.lowest(low, swingLookback) - atrBufferMult * atrV
+    strategy.entry("Long", strategy.long)
+
+if shortSig
+    stopP := ta.highest(high, swingLookback) + atrBufferMult * atrV
+    strategy.entry("Short", strategy.short)
+
+// Manage open position: target = Ichimoku baseline, stop = swing-based.
+if strategy.position_size > 0
+    targetP := kijun
+    lim = exitOnBase ? kijun : na
+    strategy.exit("Exit Long", "Long", stop=stopP, limit=lim)
+
+if strategy.position_size < 0
+    targetP := kijun
+    lim = exitOnBase ? kijun : na
+    strategy.exit("Exit Short", "Short", stop=stopP, limit=lim)
+
+if flat
+    targetP := na
+
+// =============================================================================
+// PLOTS
+// =============================================================================
+uColor = color.new(color.teal, 0)
+lColor = color.new(color.teal, 0)
+plot(bbUpper, "BB Upper", color=uColor)
+plot(bbLower, "BB Lower", color=lColor)
+plot(showBasis ? bbBasis : na, "BB Basis", color=color.new(color.gray, 40))
+
+plot(kijun, "Ichimoku Baseline (Kijun)", color=color.new(color.orange, 0), linewidth=2)
+plot(showConversion ? tenkan : na, "Conversion (Tenkan)", color=color.new(color.blue, 0))
+
+plotshape(showSignals and longSig,  title="BUY",  location=location.belowbar,
+     style=shape.triangleup,   color=color.new(color.lime, 0), size=size.small, text="BUY")
+plotshape(showSignals and shortSig, title="SELL", location=location.abovebar,
+     style=shape.triangledown, color=color.new(color.red, 0),  size=size.small, text="SELL")
+
+plot(showLevels and strategy.position_size != 0 ? stopP   : na, "Stop",
+     color=color.new(color.red, 0),   style=plot.style_linebr, linewidth=1)
+plot(showLevels and strategy.position_size != 0 ? targetP : na, "Target (Baseline)",
+     color=color.new(color.green, 0), style=plot.style_linebr, linewidth=1)
+
+// =============================================================================
+// ALERTS
+// =============================================================================
+alertcondition(longSig,  "BB-Harami LONG",  "BB-Harami LONG {{ticker}} @ {{close}}")
+alertcondition(shortSig, "BB-Harami SHORT", "BB-Harami SHORT {{ticker}} @ {{close}}")

@@ -153,6 +153,15 @@ substantial risk of loss. **Always paper-trade first**, then scale up only
 after validating live performance matches backtest. Never risk more than you
 can afford to lose.
 
+## 📈 Other Strategies in This Repo
+
+- **[Bollinger Harami Ichimoku](BOLLINGER_HARAMI.md)** — a 5-minute reversal
+  strategy: a Harami candle printing outside a Bollinger Band, exiting at the
+  Ichimoku baseline (Kijun-sen), with a dynamic swing-based stop.
+  Files: `strategy/bollinger_harami_strategy.pine`,
+  `indicator/bollinger_harami_indicator.pine`.
+
 ## 📂 Branch
 
-All development on `claude/wave-trading-bot-1nXME`.
+WaveBot development on `claude/wave-trading-bot-1nXME`.
+Bollinger Harami development on `claude/trading-strategy-bollinger-harami-mf82pz`.

@@ -1,0 +1,149 @@
+//@version=5
+// =============================================================================
+// Bollinger Harami Ichimoku - INDICATOR (signal labels)
+// -----------------------------------------------------------------------------
+// Same logic as the strategy, but as a study so you can SEE the labels print on
+// the chart and set alerts. No orders are placed here.
+//
+//   LONG label : first candle CLOSES BELOW lower Bollinger Band + bullish Harami
+//   SHORT label: first candle CLOSES ABOVE upper Bollinger Band + bearish Harami
+//
+// Each label shows the entry, the swing-based stop and the baseline (Kijun)
+// target that the strategy would use.
+// =============================================================================
+
+indicator("Bollinger Harami Ichimoku - Signals",
+     shorttitle       = "BB-Harami Sig",
+     overlay          = true,
+     max_labels_count = 500,
+     max_lines_count  = 500)
+
+// ---------- INPUT GROUPS ----------
+gBB   = "Bollinger Bands"
+gIch  = "Ichimoku (Baseline)"
+gPat  = "Harami Pattern"
+gRisk = "Risk / Exit"
+gViz  = "Visuals"
+
+// ---------- BOLLINGER BANDS ----------
+bbLen     = input.int(20,   "BB Length",          minval=1,   group=gBB)
+bbMult    = input.float(2.0,"BB StdDev Mult",     minval=0.1, step=0.1, group=gBB)
+bbSrc     = input.source(close, "BB Source",      group=gBB)
+showBasis = input.bool(false,"Show BB Basis (middle line)", group=gBB)
+
+// ---------- ICHIMOKU BASELINE (Kijun-sen) ----------
+baseLen        = input.int(26, "Baseline (Kijun) Length",      minval=1, group=gIch)
+convLen        = input.int(9,  "Conversion (Tenkan) Length",   minval=1, group=gIch)
+showConversion = input.bool(false, "Show Conversion line (Tenkan)", group=gIch)
+
+// ---------- HARAMI PATTERN ----------
+allowLong  = input.bool(true, "Enable Longs",  group=gPat)
+allowShort = input.bool(true, "Enable Shorts", group=gPat)
+oppColor   = input.bool(true, "Require 2nd candle to be opposite color", group=gPat)
+minBodyPct = input.float(0.0, "Min 1st-candle body vs range (0 = off)",  minval=0.0, maxval=1.0, step=0.05, group=gPat)
+
+// ---------- RISK / EXIT ----------
+swingLookback = input.int(10,  "Swing Lookback (bars) for stop", minval=1,   group=gRisk)
+atrLen        = input.int(14,  "ATR Length (stop buffer)",       minval=1,   group=gRisk)
+atrBufferMult = input.float(0.5,"Stop buffer (x ATR)",           minval=0.0, step=0.1, group=gRisk)
+
+// ---------- VISUALS ----------
+showLabels  = input.bool(true, "Show BUY/SELL labels",        group=gViz)
+showDetails = input.bool(true, "Include Stop / Target in labels", group=gViz)
+showLevels  = input.bool(true, "Draw Stop / Target level lines",  group=gViz)
+levelBars   = input.int(12,    "Level line length (bars)", minval=1, group=gViz)
+
+// =============================================================================
+// INDICATOR CALCULATIONS
+// =============================================================================
+[bbBasis, bbUpper, bbLower] = ta.bb(bbSrc, bbLen, bbMult)
+
+donchian(len) => math.avg(ta.highest(high, len), ta.lowest(low, len))
+kijun  = donchian(baseLen)
+tenkan = donchian(convLen)
+
+atrV = ta.atr(atrLen)
+
+// =============================================================================
+// HARAMI PATTERN DETECTION (bar [1] = first candle, bar [0] = confirmation)
+// =============================================================================
+body1Top = math.max(open[1], close[1])
+body1Bot = math.min(open[1], close[1])
+body0Top = math.max(open, close)
+body0Bot = math.min(open, close)
+
+body1Size = body1Top - body1Bot
+body0Size = body0Top - body0Bot
+range1    = high[1] - low[1]
+
+bear1 = close[1] < open[1]
+bull1 = close[1] > open[1]
+bull0 = close > open
+bear0 = close < open
+
+contained   = body0Top <= body1Top and body0Bot >= body1Bot
+smallerBody = body0Size < body1Size
+bigEnough1  = minBodyPct <= 0.0 or (range1 > 0 and body1Size / range1 >= minBodyPct)
+
+bullHarami = bear1 and (not oppColor or bull0) and contained and smallerBody and bigEnough1
+bearHarami = bull1 and (not oppColor or bear0) and contained and smallerBody and bigEnough1
+
+// =============================================================================
+// SIGNALS (first candle closed OUTSIDE the band)
+// =============================================================================
+firstBelowLower = close[1] < bbLower[1]
+firstAboveUpper = close[1] > bbUpper[1]
+
+longSig  = allowLong  and bullHarami and firstBelowLower
+shortSig = allowShort and bearHarami and firstAboveUpper
+
+// Levels the strategy would use for this signal
+longStop  = ta.lowest(low, swingLookback)  - atrBufferMult * atrV
+shortStop = ta.highest(high, swingLookback) + atrBufferMult * atrV
+
+// =============================================================================
+// PLOTS
+// =============================================================================
+plot(bbUpper, "BB Upper", color=color.new(color.teal, 0))
+plot(bbLower, "BB Lower", color=color.new(color.teal, 0))
+plot(showBasis ? bbBasis : na, "BB Basis", color=color.new(color.gray, 40))
+
+plot(kijun, "Ichimoku Baseline (Kijun)", color=color.new(color.orange, 0), linewidth=2)
+plot(showConversion ? tenkan : na, "Conversion (Tenkan)", color=color.new(color.blue, 0))
+
+plotshape(longSig,  title="BUY marker",  location=location.belowbar,
+     style=shape.triangleup,   color=color.new(color.lime, 0), size=size.tiny)
+plotshape(shortSig, title="SELL marker", location=location.abovebar,
+     style=shape.triangledown, color=color.new(color.red, 0),  size=size.tiny)
+
+// --- Rich labels ---
+f_fmt(x) => str.tostring(x, format.mintick)
+
+if showLabels and longSig
+    detL = "\nEntry " + f_fmt(close) + "\nStop " + f_fmt(longStop) + "\nTgt " + f_fmt(kijun)
+    txtL = showDetails ? "BUY" + detL : "BUY"
+    label.new(bar_index, low, txtL, yloc=yloc.belowbar, style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+
+if showLabels and shortSig
+    detS = "\nEntry " + f_fmt(close) + "\nStop " + f_fmt(shortStop) + "\nTgt " + f_fmt(kijun)
+    txtS = showDetails ? "SELL" + detS : "SELL"
+    label.new(bar_index, high, txtS, yloc=yloc.abovebar, style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+
+// --- Optional stop/target level lines drawn from the signal bar ---
+if showLevels and longSig
+    line.new(bar_index, longStop, bar_index + levelBars, longStop,
+         color=color.new(color.red, 0),   width=1)
+    line.new(bar_index, kijun, bar_index + levelBars, kijun,
+         color=color.new(color.green, 0), width=1, style=line.style_dashed)
+
+if showLevels and shortSig
+    line.new(bar_index, shortStop, bar_index + levelBars, shortStop,
+         color=color.new(color.red, 0),   width=1)
+    line.new(bar_index, kijun, bar_index + levelBars, kijun,
+         color=color.new(color.green, 0), width=1, style=line.style_dashed)
+
+// =============================================================================
+// ALERTS
+// =============================================================================
+alertcondition(longSig,  "BB-Harami LONG",  "BB-Harami LONG {{ticker}} @ {{close}}")
+alertcondition(shortSig, "BB-Harami SHORT", "BB-Harami SHORT {{ticker}} @ {{close}}")
