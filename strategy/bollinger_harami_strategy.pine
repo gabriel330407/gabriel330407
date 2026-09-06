@@ -61,7 +61,7 @@ minBodyPct   = input.float(0.0, "Min 1st-candle body vs range (0 = off)",  minva
 // ---------- RISK / EXIT ----------
 swingLookback = input.int(10,  "Swing Lookback (bars) for stop", minval=1,   group=gRisk)
 atrLen        = input.int(14,  "ATR Length (stop buffer)",       minval=1,   group=gRisk)
-atrBufferMult = input.float(0.5,"Stop buffer (x ATR)",           minval=0.0, step=0.1, group=gRisk)
+atrBufferMult = input.float(1.0,"Stop buffer (x ATR)",           minval=0.0, step=0.1, group=gRisk)
 exitOnBase    = input.bool(true,"Exit at Ichimoku Baseline (Kijun)", group=gRisk)
 
 // ---------- VISUALS ----------

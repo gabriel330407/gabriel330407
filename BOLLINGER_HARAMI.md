@@ -52,7 +52,7 @@ Entry is taken on the **close of the 2nd candle** (the confirmation bar).
 | 2nd body min / max % of 1st body | `30%` / `70%` | Second candle's body must be 30–70% of the first's |
 | Min 1st-candle body vs range | `0` (off) | Optional filter for a *strong* first candle |
 | Swing Lookback (stop) | `10` bars | Where the dynamic stop is measured |
-| Stop buffer (× ATR) | `0.5` | Padding beyond the swing |
+| Stop buffer (× ATR) | `1.0` | Padding beyond the swing (raise for a wider stop) |
 | Exit at Ichimoku Baseline | `on` | Uncheck to let the stop run alone |
 
 ## 🚀 Setup
