@@ -24,7 +24,8 @@ fills in the strategy.
 **Signal — Harami pattern (long *and* short):**
 
 A Harami is a large candle followed by a smaller candle whose real body is
-fully contained inside the first candle's body.
+fully contained inside the first candle's body — here the second body must be
+**30–70% of the first body** (configurable).
 
 | Direction | 1st (large) candle | 2nd (small) candle | Extra condition |
 |-----------|--------------------|--------------------|-----------------|
@@ -48,6 +49,7 @@ Entry is taken on the **close of the 2nd candle** (the confirmation bar).
 | Show BB Basis | `off` | Middle line hidden per spec |
 | Baseline (Kijun) Length | `26` | Ichimoku baseline / exit target |
 | Require 2nd candle opposite color | `on` | Classic Harami; turn off to relax |
+| 2nd body min / max % of 1st body | `30%` / `70%` | Second candle's body must be 30–70% of the first's |
 | Min 1st-candle body vs range | `0` (off) | Optional filter for a *strong* first candle |
 | Swing Lookback (stop) | `10` bars | Where the dynamic stop is measured |
 | Stop buffer (× ATR) | `0.5` | Padding beyond the swing |

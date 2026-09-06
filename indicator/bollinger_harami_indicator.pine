@@ -37,10 +37,12 @@ convLen        = input.int(9,  "Conversion (Tenkan) Length",   minval=1, group=g
 showConversion = input.bool(false, "Show Conversion line (Tenkan)", group=gIch)
 
 // ---------- HARAMI PATTERN ----------
-allowLong  = input.bool(true, "Enable Longs",  group=gPat)
-allowShort = input.bool(true, "Enable Shorts", group=gPat)
-oppColor   = input.bool(true, "Require 2nd candle to be opposite color", group=gPat)
-minBodyPct = input.float(0.0, "Min 1st-candle body vs range (0 = off)",  minval=0.0, maxval=1.0, step=0.05, group=gPat)
+allowLong    = input.bool(true, "Enable Longs",  group=gPat)
+allowShort   = input.bool(true, "Enable Shorts", group=gPat)
+oppColor     = input.bool(true, "Require 2nd candle to be opposite color", group=gPat)
+minBodyRatio = input.float(0.30, "2nd body min % of 1st body", minval=0.0, maxval=1.0, step=0.05, group=gPat)
+maxBodyRatio = input.float(0.70, "2nd body max % of 1st body", minval=0.0, maxval=1.0, step=0.05, group=gPat)
+minBodyPct   = input.float(0.0, "Min 1st-candle body vs range (0 = off)",  minval=0.0, maxval=1.0, step=0.05, group=gPat)
 
 // ---------- RISK / EXIT ----------
 swingLookback = input.int(10,  "Swing Lookback (bars) for stop", minval=1,   group=gRisk)
@@ -82,11 +84,12 @@ bull0 = close > open
 bear0 = close < open
 
 contained   = body0Top <= body1Top and body0Bot >= body1Bot
-smallerBody = body0Size < body1Size
+// 2nd body must be minBodyRatio..maxBodyRatio of the 1st body (default 30-70%)
+ratioOk     = body1Size > 0 and body0Size >= minBodyRatio * body1Size and body0Size <= maxBodyRatio * body1Size
 bigEnough1  = minBodyPct <= 0.0 or (range1 > 0 and body1Size / range1 >= minBodyPct)
 
-bullHarami = bear1 and (not oppColor or bull0) and contained and smallerBody and bigEnough1
-bearHarami = bull1 and (not oppColor or bear0) and contained and smallerBody and bigEnough1
+bullHarami = bear1 and (not oppColor or bull0) and contained and ratioOk and bigEnough1
+bearHarami = bull1 and (not oppColor or bear0) and contained and ratioOk and bigEnough1
 
 // =============================================================================
 // SIGNALS (first candle closed OUTSIDE the band)
