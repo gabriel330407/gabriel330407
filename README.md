@@ -10,6 +10,7 @@ across 8 Forex pairs with Multi-Timeframe analysis.
 | `strategy/wave_bot_strategy.pine` | **Backtest strategy** - historical win rate, PnL, drawdown |
 | `scanner/wave_bot_scanner.pine`   | **8-pair scanner** - one chart watches all pairs, 2-position cap |
 | `indicator/wave_bot_alerts.pine`  | **Per-chart alerts** - detailed per-pair alerts + trailing stop |
+| `mt5/RangeReentry_EA.mq5`         | **MT5 Expert Advisor** - range breakout / failed-breakout re-entry (EURUSD, XAUUSD, US100, US500), FTMO guards - see [`mt5/README.md`](mt5/README.md) |
 
 ## 🎯 Strategy Specs
 
