@@ -1,0 +1,17 @@
+{
+ "instruments": [
+  "SYNNULL",
+  "SYNEDGE"
+ ],
+ "oos": "2022-01-01",
+ "selection": {
+  "min_avg_is": 0.1,
+  "min_t_is": 2.5,
+  "min_n_is": 100,
+  "min_avg_oos": 0.05,
+  "min_t_oos": 1.0,
+  "min_n_oos": 40,
+  "min_pos_years": 0.7,
+  "min_neighbors": 0.6
+ }
+}

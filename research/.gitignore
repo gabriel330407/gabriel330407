@@ -1,0 +1,4 @@
+__pycache__/
+data/duka/
+results/*/*.npy
+results/*/*_dates.csv
