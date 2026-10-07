@@ -1,0 +1,51 @@
+//@version=6
+// First 15-Minute Range - Hourly
+// מסמן את טווח המחיר (High/Low) של הרבע שעה הראשונה ומותח אותו עד סוף השעה.
+// מתעדכן אוטומטית בכל שעה חדשה.
+//   1) שעה עגולה : טווח 00:00-00:15, נמתח עד 01:00
+//   2) חצי שעה   : טווח 00:30-00:45, נמתח עד 01:30
+// יש להשתמש בטיים-פריים של 15 דקות ומטה (1/3/5/15).
+
+indicator("First 15m Range - Hourly", shorttitle = "15m Range", overlay = true, max_boxes_count = 500)
+
+// ---------- INPUTS ----------
+rangeMins = input.int(15, "אורך הטווח (דקות)", minval = 1, maxval = 59)
+
+showHour  = input.bool(true, "הצג", group = "שעה עגולה (:00)")
+colHour   = input.color(color.new(color.blue, 85), "צבע", group = "שעה עגולה (:00)")
+
+showHalf  = input.bool(true, "הצג", group = "חצי שעה (:30)")
+colHalf   = input.color(color.new(color.orange, 85), "צבע", group = "חצי שעה (:30)")
+
+if timeframe.in_seconds() > rangeMins * 60
+    runtime.error("יש לבחור טיים-פריים של " + str.tostring(rangeMins) + " דקות ומטה")
+
+// ---------- LOGIC ----------
+// startMin = הדקה שבה מתחיל הטווח (0 = שעה עגולה, 30 = חצי שעה)
+hourlyRange(int startMin, bool show, color col) =>
+    var box   b  = na
+    var float hi = na
+    var float lo = na
+
+    elapsed = (minute(time) - startMin + 60) % 60           // דקות מתחילת השעה של הטווח
+    newWin  = elapsed < nz(elapsed[1], 60) or time - nz(time[1]) >= 3600000
+    inRange = elapsed < rangeMins
+    winEnd  = time + (60 - elapsed) * 60000                 // סוף השעה
+
+    if newWin
+        if inRange and show
+            hi := high
+            lo := low
+            b  := box.new(time, hi, winEnd, lo, xloc = xloc.bar_time,
+                          border_color = color.new(col, 0), bgcolor = col)
+        else
+            b := na
+    else if inRange and not na(b)
+        hi := math.max(hi, high)
+        lo := math.min(lo, low)
+        box.set_top(b, hi)
+        box.set_bottom(b, lo)
+    b
+
+hourlyRange(0,  showHour, colHour)
+hourlyRange(30, showHalf, colHalf)
