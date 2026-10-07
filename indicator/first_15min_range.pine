@@ -17,7 +17,7 @@ colHour   = input.color(color.new(color.blue, 85), "צבע", group = "שעה ע�
 showHalf  = input.bool(true, "הצג", group = "חצי שעה (:30)")
 colHalf   = input.color(color.new(color.orange, 85), "צבע", group = "חצי שעה (:30)")
 
-showVLine = input.bool(true, "קו אנכי מקוקו בסוף הטווח", group = "קו אנכי")
+showVLine = input.bool(true, "קווים אנכיים מקוקווים (אחרי 15 ו-30 דק')", group = "קו אנכי")
 
 if timeframe.in_seconds() > rangeMins * 60
     runtime.error("יש לבחור טיים-פריים של " + str.tostring(rangeMins) + " דקות ומטה")
@@ -33,7 +33,8 @@ hourlyRange(int startMin, bool show, color col) =>
     newWin  = elapsed < nz(elapsed[1], 60) or time - nz(time[1]) >= 3600000
     inRange = elapsed < rangeMins
     winEnd  = time + (60 - elapsed) * 60000                 // סוף השעה
-    rngEnd  = time + (rangeMins - elapsed) * 60000          // סוף הרבע שעה
+    rngEnd  = time + (rangeMins - elapsed) * 60000          // סוף הרבע שעה הראשון
+    rngEnd2 = time + (2 * rangeMins - elapsed) * 60000      // סוף הרבע שעה השני (30 דק')
 
     if newWin
         if inRange and show
@@ -43,6 +44,8 @@ hourlyRange(int startMin, bool show, color col) =>
                           border_color = color.new(col, 0), bgcolor = col)
             if showVLine
                 line.new(rngEnd, hi, rngEnd, lo, xloc = xloc.bar_time, extend = extend.both,
+                         color = color.new(col, 0), style = line.style_dashed, width = 1)
+                line.new(rngEnd2, hi, rngEnd2, lo, xloc = xloc.bar_time, extend = extend.both,
                          color = color.new(col, 0), style = line.style_dashed, width = 1)
         else
             b := na
