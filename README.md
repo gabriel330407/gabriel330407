@@ -1,3 +1,8 @@
+> **New - MT5 / FTMO:** [`mt5-ftmo/`](mt5-ftmo/) contains **TurtleFTMO**, the original
+> Turtle Trading Rules (public since 2003) as an MT5 Expert Advisor with an FTMO protection
+> layer (0.5% risk per trade, EURUSD / USDJPY / XAUUSD). Setup guide in Hebrew:
+> [`mt5-ftmo/README.md`](mt5-ftmo/README.md).
+
 # 🌊 WaveBot - Automated Forex Trading System for TradingView
 
 Multi-indicator confluence strategy for TradingView Premium, fully automated
